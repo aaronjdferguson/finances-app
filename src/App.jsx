@@ -94,34 +94,25 @@ function CatSelect({value, onChange, customCats, onAddCat, style={}}) {
 
 // ─── Gemini helpers ───────────────────────────────────────────────────────────
 const scanWithGemini = async (b64, mime) => {
-  const key = import.meta.env.VITE_GEMINI_KEY
-  if (!key) throw new Error("No Gemini key")
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ contents:[{ parts:[
-      { inline_data:{ mime_type:mime, data:b64 } },
-      { text:`Extract from this receipt. Return ONLY valid JSON, no markdown: {"merchant":"","date":"YYYY-MM-DD","amount":0,"category":""}. Category must be one of: ${Object.keys(BASE_CATS).join(", ")}` }
-    ]}]})
+  const res = await fetch("/.netlify/functions/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "receipt", data: b64, mime })
   })
-  const data = await res.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}"
-  return JSON.parse(text.replace(/```json|```/g,"").trim())
+  const { text, error } = await res.json()
+  if (error) throw new Error(error)
+  return JSON.parse(text.replace(/```json|```/g, "").trim())
 }
 
 const parsePDFWithGemini = async (b64) => {
-  const key = import.meta.env.VITE_GEMINI_KEY
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${key}`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ contents:[{ parts:[
-      { inline_data:{ mime_type:"application/pdf", data:b64 } },
-      { text:`Extract every transaction from this bank/credit card statement. Return ONLY a JSON array, no markdown. Each item: {"date":"YYYY-MM-DD","merch":"clean merchant name","amt":number,"cat":"category"}. Charges/purchases=negative numbers. Payments/credits/refunds=positive numbers. Categories: ${Object.keys(BASE_CATS).join(", ")}. Skip totals, $0 rows, and summary rows.` }
-    ]}]})
+  const res = await fetch("/.netlify/functions/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "pdf", data: b64, mime: "application/pdf" })
   })
-  const data = await res.json()
-  if (data.error) throw new Error(data.error.message)
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || ""
-  if (!rawText) throw new Error("No response from Gemini")
-  const match = rawText.replace(/```json|```/g,"").match(/\[[\s\S]*\]/)
+  const { text, error } = await res.json()
+  if (error) throw new Error(error)
+  const match = text.replace(/```json|```/g, "").match(/\[[\s\S]*\]/)
   if (!match) throw new Error("Could not find transaction data in response")
   return JSON.parse(match[0])
 }
