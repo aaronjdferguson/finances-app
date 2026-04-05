@@ -1,28 +1,34 @@
 import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
 import { BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts"
+
 const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
-// ─── Constants ────────────────────────────────────────────────────────────────
-const CATS = {
+
+// ─── Base Categories ──────────────────────────────────────────────────────────
+const BASE_CATS = {
   Housing:{c:"#8b5cf6",i:"🏠"}, Groceries:{c:"#10b981",i:"🛒"}, Restaurants:{c:"#f59e0b",i:"🍽️"},
   Transport:{c:"#3b82f6",i:"🚗"}, Healthcare:{c:"#06b6d4",i:"❤️"}, Shopping:{c:"#ec4899",i:"🛍️"},
   Entertainment:{c:"#6366f1",i:"🎬"}, Utilities:{c:"#64748b",i:"⚡"}, "Personal Care":{c:"#14b8a6",i:"✂️"},
   Subscriptions:{c:"#f97316",i:"📱"}, Property:{c:"#a78bfa",i:"🏢"}, Income:{c:"#22c55e",i:"💵"},
   Transfer:{c:"#94a3b8",i:"↔️"}, Other:{c:"#475569",i:"📦"}
 }
+const getCustomCats = () => { try { return JSON.parse(localStorage.getItem("fos_custom_cats")||"{}") } catch { return {} } }
+const saveCustomCats = cats => localStorage.setItem("fos_custom_cats", JSON.stringify(cats))
+const getAllCats = customCats => ({ ...BASE_CATS, ...customCats })
+
 const KW = {
   Groceries:["safeway","kroger","qfc","albertsons","whole foods","trader joe","costco","winco","fred meyer","sprouts","aldi","hmart","h mart","gmart","cookunity"],
-  Transport:["shell","chevron","arco","bp","exxon","mobil","texaco","speedway","uber","lyft","parking","transit","fuel","gas station"],
+  Transport:["shell","chevron","arco","bp","exxon","mobil","texaco","speedway","uber","lyft","parking","transit","fuel"],
   Restaurants:["mcdonald","burger king","subway","starbucks","dunkin","chipotle","domino","pizza","taco bell","kfc","ivar","panda express","sushi","restaurant","cafe","grubhub","doordash","gameway"],
   Shopping:["amazon","target","macy","nordstrom","tj maxx","marshalls","ross ","kohl","best buy","homegoods","ikea","ebay","walmart","wal-mart","value village","hot topic","academy sports","snapdoodle","temu","pet wants"],
-  Utilities:["comcast","xfinity","puget sound","psd ","pud","at&t","verizon","t-mobile","centurylink","spectrum","electric","internet","snohomish county"],
+  Utilities:["comcast","xfinity","puget sound","pud","at&t","verizon","t-mobile","centurylink","spectrum","electric","internet","snohomish county"],
   Subscriptions:["netflix","spotify","hulu","disney","apple.com","apple music","google play","microsoft","adobe","dropbox","amazon prime","youtube","gsuite","google *"],
   Healthcare:["cvs","walgreens","rite aid","pharmacy","medical","dental","hospital","clinic","providence","kaiser","optum","orthodontic","nova ortho","reverse.health"],
   Entertainment:["amc ","regal","cinemark","ticketmaster","eventbrite","steam","playstation","xbox","nintendo"],
   Property:["home depot","lowe","ace hardware","maintenance","repair","plumber","electrician","hardware","snyder greenwood","robert b devney"],
   Housing:["mortgage","rent payment","hoa ","homeowners"],
   "Personal Care":["great clips","supercuts","ulta","sephora","salon","spa","barber","nail ","molly's skin","skin care"],
-  Income:["paycheck","direct deposit","payroll","salary","rent received","transfer in","refund","redemption","cash auto"],
+  Income:["paycheck","direct deposit","payroll","salary","rent received","refund","redemption","cash auto"],
 }
 const autocat = d => { const s=(d||"").toLowerCase(); for(const[c,ks]of Object.entries(KW)){if(ks.some(k=>s.includes(k)))return c} return "Other" }
 const IRS = {Business:0.67,Medical:0.21,Charity:0.14,Property:0.67,Personal:0}
@@ -33,14 +39,14 @@ const now=new Date(), cmo=now.getMonth(), cyr=now.getFullYear()
 const fmt = n=>(n<0?"-$":"$")+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})
 const fmtK = n=>Math.abs(n)>=1000?"$"+(Math.abs(n)/1000).toFixed(1).replace(".0","")+"k":fmt(n)
 const hav=(a,b,c,d)=>{const R=3958.8,dL=(c-a)*Math.PI/180,dN=(d-b)*Math.PI/180,x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dN/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
-const DEF_BUDGETS = [{cat:"Housing",budg:2200},{cat:"Groceries",budg:600},{cat:"Restaurants",budg:300},{cat:"Transport",budg:250},{cat:"Healthcare",budg:200},{cat:"Shopping",budg:400},{cat:"Entertainment",budg:150},{cat:"Utilities",budg:300},{cat:"Subscriptions",budg:80},{cat:"Personal Care",budg:100},{cat:"Property",budg:600}]
-const CL_ITEMS = [
+const DEF_BUDGETS=[{cat:"Housing",budg:2200},{cat:"Groceries",budg:600},{cat:"Restaurants",budg:300},{cat:"Transport",budg:250},{cat:"Healthcare",budg:200},{cat:"Shopping",budg:400},{cat:"Entertainment",budg:150},{cat:"Utilities",budg:300},{cat:"Subscriptions",budg:80},{cat:"Personal Care",budg:100},{cat:"Property",budg:600}]
+const CL_ITEMS=[
   {s:"Income",items:["W-2 from each employer","1099-NEC (freelance/contract)","1099-INT (bank interest)","1099-DIV (dividends)","1099-R (retirement distributions)","Rental income records"]},
   {s:"Deductions",items:["Mortgage interest (Form 1098)","Property tax records","Charitable donation receipts","Medical/dental receipts","Student loan interest (1098-E)","Mileage log (tracked above)"]},
   {s:"Property/Rental",items:["Rental income & expense records","Prior year depreciation schedule","Repair receipts (vault above)","Property insurance statements","HOA statements"]},
   {s:"Personal",items:["SSN for you and dependents","Prior year tax return","Bank routing # for refund","IP PIN if issued by IRS","Estimated tax payment records"]},
 ]
-// ─── Theme ────────────────────────────────────────────────────────────────────
+
 const bg="#111827",sdbg="#0d1117",card="#1f2937",bdr="#374151",t1="#f9fafb",t2="#9ca3af",acc="#8b5cf6"
 const S={
   card:{background:card,border:`1px solid ${bdr}`,borderRadius:"12px",padding:"20px"},
@@ -54,7 +60,39 @@ const S={
   ntab:a=>({background:a?"#1f2937":"transparent",border:"none",borderLeft:a?`3px solid ${acc}`:"3px solid transparent",cursor:"pointer",color:a?acc:t2,fontSize:"13px",fontWeight:a?"600":"400",padding:"9px 14px",display:"flex",alignItems:"center",gap:"10px",width:"100%",marginBottom:"2px",textAlign:"left",borderRadius:a?"0 8px 8px 0":"0 8px 8px 0"}),
 }
 const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Tax Prep",i:"💼"}]
-// ─── Gemini Receipt Scan ──────────────────────────────────────────────────────
+
+// ─── Category Selector Component ──────────────────────────────────────────────
+function CatSelect({value, onChange, customCats, onAddCat, style={}}) {
+  const [adding, setAdding] = useState(false)
+  const [newCat, setNewCat] = useState("")
+  const CATS = getAllCats(customCats)
+  const handleAdd = () => {
+    const name = newCat.trim()
+    if (!name) return
+    const updated = { ...customCats, [name]: { c: "#94a3b8", i: "🏷️" } }
+    onAddCat(updated)
+    onChange(name)
+    setNewCat("")
+    setAdding(false)
+  }
+  if (adding) return (
+    <div style={{ display:"flex", gap:"4px", alignItems:"center" }}>
+      <input autoFocus style={{ ...S.inp, ...style, minWidth:"120px" }} placeholder="New category name" value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")handleAdd();if(e.key==="Escape")setAdding(false)}}/>
+      <button onClick={handleAdd} style={{ ...S.btn("green"), padding:"6px 10px", fontSize:"12px" }}>✓</button>
+      <button onClick={()=>setAdding(false)} style={{ ...S.btn("gray"), padding:"6px 10px", fontSize:"12px" }}>✕</button>
+    </div>
+  )
+  return (
+    <div style={{ display:"flex", gap:"4px", alignItems:"center" }}>
+      <select style={{ ...S.sel, ...style }} value={value} onChange={e=>onChange(e.target.value)}>
+        {Object.keys(CATS).map(c=><option key={c}>{c}</option>)}
+      </select>
+      <button onClick={()=>setAdding(true)} title="Add new category" style={{ background:"#374151", border:`1px solid #4b5563`, color:t2, borderRadius:"8px", padding:"6px 10px", cursor:"pointer", fontSize:"14px", flexShrink:0 }}>+</button>
+    </div>
+  )
+}
+
+// ─── Gemini helpers ───────────────────────────────────────────────────────────
 const scanWithGemini = async (b64, mime) => {
   const key = import.meta.env.VITE_GEMINI_KEY
   if (!key) throw new Error("No Gemini key")
@@ -62,15 +100,96 @@ const scanWithGemini = async (b64, mime) => {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ contents:[{ parts:[
       { inline_data:{ mime_type:mime, data:b64 } },
-      { text:`Extract from this receipt. Return ONLY valid JSON, no markdown: {"merchant":"","date":"YYYY-MM-DD","amount":0,"category":""}. Category must be exactly one of: ${Object.keys(CATS).join(", ")}` }
+      { text:`Extract from this receipt. Return ONLY valid JSON, no markdown: {"merchant":"","date":"YYYY-MM-DD","amount":0,"category":""}. Category must be one of: ${Object.keys(BASE_CATS).join(", ")}` }
     ]}]})
   })
   const data = await res.json()
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}"
   return JSON.parse(text.replace(/```json|```/g,"").trim())
 }
+
+const parsePDFWithGemini = async (b64) => {
+  const key = import.meta.env.VITE_GEMINI_KEY
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${key}`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ contents:[{ parts:[
+      { inline_data:{ mime_type:"application/pdf", data:b64 } },
+      { text:`Extract every transaction from this bank/credit card statement. Return ONLY a JSON array, no markdown. Each item: {"date":"YYYY-MM-DD","merch":"clean merchant name","amt":number,"cat":"category"}. Charges/purchases=negative numbers. Payments/credits/refunds=positive numbers. Categories: ${Object.keys(BASE_CATS).join(", ")}. Skip totals, $0 rows, and summary rows.` }
+    ]}]})
+  })
+  const data = await res.json()
+  if (data.error) throw new Error(data.error.message)
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || ""
+  if (!rawText) throw new Error("No response from Gemini")
+  const match = rawText.replace(/```json|```/g,"").match(/\[[\s\S]*\]/)
+  if (!match) throw new Error("Could not find transaction data in response")
+  return JSON.parse(match[0])
+}
+
+// ─── PIN Screen ───────────────────────────────────────────────────────────────
+function PinScreen({ onUnlock }) {
+  const stored = localStorage.getItem("fos_pin")
+  const isNew = !stored
+  const [pin, setPin] = useState("")
+  const [confirm, setConfirm] = useState("")
+  const [step, setStep] = useState(isNew ? "create" : "enter")
+  const [err, setErr] = useState("")
+  const [shake, setShake] = useState(false)
+  const doShake = () => { setShake(true); setTimeout(() => setShake(false), 600) }
+  const handleNum = n => {
+    if (step === "enter") {
+      const next = pin + n; setPin(next)
+      if (next.length === 4) { if (next === stored) { onUnlock() } else { setErr("Incorrect PIN"); setPin(""); doShake() } }
+    } else if (step === "create") {
+      const next = pin + n; setPin(next)
+      if (next.length === 4) setStep("confirm")
+    } else if (step === "confirm") {
+      const next = confirm + n; setConfirm(next)
+      if (next.length === 4) {
+        if (next === pin) { localStorage.setItem("fos_pin", pin); onUnlock() }
+        else { setErr("PINs don't match — try again"); setPin(""); setConfirm(""); setStep("create"); doShake() }
+      }
+    }
+  }
+  const del = () => { if (step === "confirm") setConfirm(p=>p.slice(0,-1)); else setPin(p=>p.slice(0,-1)) }
+  const cur = step === "confirm" ? confirm : pin
+  const titles = { enter:"Enter PIN", create:"Create a PIN", confirm:"Confirm PIN" }
+  const subs = { enter:"Enter your 4-digit PIN to continue", create:"Choose a 4-digit PIN to protect your app", confirm:"Re-enter your PIN to confirm" }
+  return (
+    <div style={{ fontFamily:"'Inter',system-ui,sans-serif", background:bg, minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
+      <div style={{ textAlign:"center", width:"100%", maxWidth:"320px" }}>
+        <div style={{ fontSize:"40px", marginBottom:"12px" }}>💼</div>
+        <div style={{ fontSize:"22px", fontWeight:"700", color:acc, marginBottom:"6px" }}>FinanceOS</div>
+        <div style={{ fontSize:"15px", fontWeight:"600", color:t1, marginBottom:"6px" }}>{titles[step]}</div>
+        <div style={{ fontSize:"13px", color:t2, marginBottom:"28px" }}>{subs[step]}</div>
+        {err && <div style={{ background:"#7f1d1d", color:"#fca5a5", borderRadius:"8px", padding:"8px 14px", fontSize:"13px", marginBottom:"18px" }}>{err}</div>}
+        <div style={{ display:"flex", justifyContent:"center", gap:"16px", marginBottom:"32px", transform:shake?"translateX(8px)":"none", transition:"transform 0.1s" }}>
+          {[0,1,2,3].map(i=>(
+            <div key={i} style={{ width:"16px", height:"16px", borderRadius:"50%", background:cur.length>i?acc:"#374151", border:`2px solid ${cur.length>i?acc:"#4b5563"}`, transition:"all 0.15s" }}/>
+          ))}
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"10px", maxWidth:"240px", margin:"0 auto" }}>
+          {[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((n,i)=>(
+            <button key={i} onClick={()=>n==="⌫"?del():n!==""&&handleNum(String(n))}
+              style={{ height:"60px", borderRadius:"12px", border:`1px solid ${bdr}`, background:n===""?"transparent":card, color:n==="⌫"?t2:t1, fontSize:n==="⌫"?"20px":"22px", fontWeight:"600", cursor:n===""?"default":"pointer" }}
+            >{n}</button>
+          ))}
+        </div>
+        {step==="enter" && <button onClick={()=>{localStorage.removeItem("fos_pin");window.location.reload()}} style={{ background:"none", border:"none", color:"#4b5563", fontSize:"12px", cursor:"pointer", marginTop:"24px", display:"block", margin:"24px auto 0" }}>Forgot PIN? Reset app lock</button>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [unlocked, setUnlocked] = useState(false)
+  if (!unlocked) return <PinScreen onUnlock={() => setUnlocked(true)} />
+  return <MainApp />
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function MainApp() {
   const [nav,setNav]=useState("Dashboard")
   const [open,setOpen]=useState(true)
   const [loading,setLoading]=useState(true)
@@ -81,14 +200,18 @@ export default function App() {
   const [trips,setTrips]=useState([])
   const [rcpts,setRcpts]=useState([])
   const [ckd,setCkd]=useState({})
+  const [customCats,setCustomCats]=useState(getCustomCats())
   const [notif,setNotif]=useState(null)
   const toast=(msg,type="ok")=>{setNotif({msg,type});setTimeout(()=>setNotif(null),4500)}
-  // Load all data from Supabase
+
+  const handleAddCat = updated => { saveCustomCats(updated); setCustomCats(updated) }
+  const CATS = getAllCats(customCats)
+
   useEffect(()=>{
-    const load = async () => {
+    const load=async()=>{
       setLoading(true)
-      try {
-        const [a,t,b,g,tr,r,c] = await Promise.all([
+      try{
+        const [a,t,b,g,tr,r,c]=await Promise.all([
           sb.from("accounts").select("*").order("id"),
           sb.from("transactions").select("*").order("created_at",{ascending:false}),
           sb.from("budgets").select("*"),
@@ -97,19 +220,19 @@ export default function App() {
           sb.from("receipts").select("*").order("created_at",{ascending:false}),
           sb.from("checklist").select("*"),
         ])
-        if(a.data?.length) setAccts(a.data)
-        if(t.data) setTxns(t.data)
-        if(b.data?.length) setBud(b.data)
-        if(g.data) setGoals(g.data)
-        if(tr.data) setTrips(tr.data)
-        if(r.data) setRcpts(r.data)
-        const ckMap={}; (c.data||[]).forEach(x=>ckMap[x.item_key]=x.checked); setCkd(ckMap)
-      } catch(e) { toast("Failed to load data: "+e.message,"err") }
+        if(a.data?.length)setAccts(a.data)
+        if(t.data)setTxns(t.data)
+        if(b.data?.length)setBud(b.data)
+        if(g.data)setGoals(g.data)
+        if(tr.data)setTrips(tr.data)
+        if(r.data)setRcpts(r.data)
+        const ckMap={};(c.data||[]).forEach(x=>ckMap[x.item_key]=x.checked);setCkd(ckMap)
+      }catch(e){toast("Failed to load: "+e.message,"err")}
       setLoading(false)
     }
     load()
   },[])
-  // Derived values
+
   const ms=`${cyr}-${String(cmo+1).padStart(2,"0")}`
   const mT=txns.filter(t=>t.date?.startsWith(ms))
   const income=mT.filter(t=>t.amt>0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0)
@@ -117,52 +240,37 @@ export default function App() {
   const assets=accts.filter(a=>a.bal>0).reduce((s,a)=>s+a.bal,0)
   const liabs=Math.abs(accts.filter(a=>a.bal<0).reduce((s,a)=>s+a.bal,0))
   const nw=assets-liabs
-  // CRUD helpers
-  const addTxn = async row => {
-    const {data,error}=await sb.from("transactions").insert({...row,created_at:new Date().toISOString()}).select().single()
-    if(!error&&data) setTxns(p=>[data,...p]); else toast("Save failed","err")
-  }
-  const delTxn = async id => { await sb.from("transactions").delete().eq("id",id); setTxns(p=>p.filter(x=>x.id!==id)) }
-  const updTxn = async (id,row) => { await sb.from("transactions").update(row).eq("id",id); setTxns(p=>p.map(x=>x.id===id?{...x,...row}:x)) }
-  const addAcct = async row => {
-    const {data,error}=await sb.from("accounts").insert(row).select().single()
-    if(!error&&data) setAccts(p=>[...p,data]); else toast("Save failed","err")
-  }
-  const delAcct = async id => { await sb.from("accounts").delete().eq("id",id); setAccts(p=>p.filter(x=>x.id!==id)) }
-  const updAcct = async (id,row) => { await sb.from("accounts").update(row).eq("id",id); setAccts(p=>p.map(x=>x.id===id?{...x,...row}:x)) }
-  const updBudg = async (cat,budg) => { await sb.from("budgets").update({budg}).eq("cat",cat); setBud(p=>p.map(x=>x.cat===cat?{...x,budg}:x)) }
-  const addGoal = async row => {
-    const {data,error}=await sb.from("goals").insert({...row,created_at:new Date().toISOString()}).select().single()
-    if(!error&&data) setGoals(p=>[...p,data]); else toast("Save failed","err")
-  }
-  const delGoal = async id => { await sb.from("goals").delete().eq("id",id); setGoals(p=>p.filter(x=>x.id!==id)) }
-  const updGoal = async (id,row) => { await sb.from("goals").update(row).eq("id",id); setGoals(p=>p.map(x=>x.id===id?{...x,...row}:x)) }
-  const addTrip = async row => {
-    const {data,error}=await sb.from("trips").insert({...row,created_at:new Date().toISOString()}).select().single()
-    if(!error&&data) setTrips(p=>[data,...p]); else toast("Save failed","err")
-  }
-  const delTrip = async id => { await sb.from("trips").delete().eq("id",id); setTrips(p=>p.filter(x=>x.id!==id)) }
-  const addRcpt = async row => {
-    const {data,error}=await sb.from("receipts").insert({...row,created_at:new Date().toISOString()}).select().single()
-    if(!error&&data) setRcpts(p=>[data,...p]); else toast("Save failed","err")
-  }
-  const delRcpt = async id => { await sb.from("receipts").delete().eq("id",id); setRcpts(p=>p.filter(x=>x.id!==id)) }
-  const updRcpt = async (id,row) => { await sb.from("receipts").update(row).eq("id",id); setRcpts(p=>p.map(x=>x.id===id?{...x,...row}:x)) }
-  const toggleCk = async key => {
-    const val=!ckd[key]; setCkd(p=>({...p,[key]:val}))
-    await sb.from("checklist").upsert({item_key:key,checked:val},{onConflict:"item_key"})
-  }
-  const p={accts,txns,bud,goals,trips,rcpts,ckd,mT,income,expenses,assets,liabs,nw,
+
+  const addTxn=async row=>{const{data,error}=await sb.from("transactions").insert({...row,created_at:new Date().toISOString()}).select().single();if(!error&&data)setTxns(p=>[data,...p]);else toast("Save failed","err")}
+  const delTxn=async id=>{await sb.from("transactions").delete().eq("id",id);setTxns(p=>p.filter(x=>x.id!==id))}
+  const updTxn=async(id,row)=>{await sb.from("transactions").update(row).eq("id",id);setTxns(p=>p.map(x=>x.id===id?{...x,...row}:x))}
+  const addAcct=async row=>{const{data,error}=await sb.from("accounts").insert(row).select().single();if(!error&&data)setAccts(p=>[...p,data]);else toast("Save failed","err")}
+  const delAcct=async id=>{await sb.from("accounts").delete().eq("id",id);setAccts(p=>p.filter(x=>x.id!==id))}
+  const updAcct=async(id,row)=>{await sb.from("accounts").update(row).eq("id",id);setAccts(p=>p.map(x=>x.id===id?{...x,...row}:x))}
+  const updBudg=async(cat,budg)=>{await sb.from("budgets").update({budg}).eq("cat",cat);setBud(p=>p.map(x=>x.cat===cat?{...x,budg}:x))}
+  const addGoal=async row=>{const{data,error}=await sb.from("goals").insert({...row,created_at:new Date().toISOString()}).select().single();if(!error&&data)setGoals(p=>[...p,data]);else toast("Save failed","err")}
+  const delGoal=async id=>{await sb.from("goals").delete().eq("id",id);setGoals(p=>p.filter(x=>x.id!==id))}
+  const updGoal=async(id,row)=>{await sb.from("goals").update(row).eq("id",id);setGoals(p=>p.map(x=>x.id===id?{...x,...row}:x))}
+  const addTrip=async row=>{const{data,error}=await sb.from("trips").insert({...row,created_at:new Date().toISOString()}).select().single();if(!error&&data)setTrips(p=>[data,...p]);else toast("Save failed","err")}
+  const delTrip=async id=>{await sb.from("trips").delete().eq("id",id);setTrips(p=>p.filter(x=>x.id!==id))}
+  const addRcpt=async row=>{const{data,error}=await sb.from("receipts").insert({...row,created_at:new Date().toISOString()}).select().single();if(!error&&data)setRcpts(p=>[data,...p]);else toast("Save failed","err")}
+  const delRcpt=async id=>{await sb.from("receipts").delete().eq("id",id);setRcpts(p=>p.filter(x=>x.id!==id))}
+  const updRcpt=async(id,row)=>{await sb.from("receipts").update(row).eq("id",id);setRcpts(p=>p.map(x=>x.id===id?{...x,...row}:x))}
+  const toggleCk=async key=>{const val=!ckd[key];setCkd(p=>({...p,[key]:val}));await sb.from("checklist").upsert({item_key:key,checked:val},{onConflict:"item_key"})}
+
+  const p={accts,txns,bud,goals,trips,rcpts,ckd,mT,income,expenses,assets,liabs,nw,CATS,customCats,
     addTxn,delTxn,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
-    addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,toast}
-  if(loading) return (
-    <div style={{...{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1},display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
+    addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,toast,handleAddCat}
+
+  if(loading) return(
+    <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
       <div style={{fontSize:"36px"}}>💼</div>
       <div style={{fontSize:"16px",color:acc,fontWeight:"600"}}>Loading FinanceOS…</div>
       <div style={{fontSize:"13px",color:t2}}>Connecting to your database</div>
     </div>
   )
-  return (
+
+  return(
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',system-ui,sans-serif",background:bg,color:t1,overflow:"hidden"}}>
       {notif&&<div style={{position:"fixed",top:16,right:16,zIndex:1000,background:notif.type==="err"?"#7f1d1d":"#14532d",color:notif.type==="err"?"#fca5a5":"#86efac",border:`1px solid ${notif.type==="err"?"#ef4444":"#22c55e"}`,borderRadius:"10px",padding:"10px 16px",fontSize:"13px",fontWeight:"500",maxWidth:"300px",boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>{notif.msg}</div>}
       {open&&<Sidebar nav={nav} setNav={setNav} nw={nw} accts={accts}/>}
@@ -189,7 +297,7 @@ export default function App() {
     </div>
   )
 }
-// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
 function Sidebar({nav,setNav,nw,accts}){
   return(
     <div style={{width:"215px",background:sdbg,borderRight:`1px solid ${bdr}`,display:"flex",flexDirection:"column",flexShrink:0}}>
@@ -217,8 +325,8 @@ function Sidebar({nav,setNav,nw,accts}){
     </div>
   )
 }
-// ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({bud,txns,mT,income,expenses,nw}){
+
+function Dashboard({bud,txns,mT,income,expenses,nw,CATS}){
   const spend={},bSpent={}
   mT.filter(t=>t.amt<0&&t.cat!=="Transfer").forEach(t=>{spend[t.cat]=(spend[t.cat]||0)+Math.abs(t.amt);bSpent[t.cat]=(bSpent[t.cat]||0)+Math.abs(t.amt)})
   const pie=Object.entries(spend).map(([n,v])=>({name:n,value:Math.round(v*100)/100,color:CATS[n]?.c||"#555"})).sort((a,b)=>b.value-a.value)
@@ -238,7 +346,7 @@ function Dashboard({bud,txns,mT,income,expenses,nw}){
       <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr",gap:"14px",marginBottom:"14px"}}>
         <div style={S.card}>
           <div style={S.h2}>Spending by Category — {MOS[cmo]}</div>
-          {pie.length===0?<p style={{color:t2,fontSize:"13px"}}>No spending data yet for this month.</p>:(
+          {pie.length===0?<p style={{color:t2,fontSize:"13px"}}>No spending data yet.</p>:(
             <div style={{display:"flex",alignItems:"center",gap:"16px"}}>
               <div style={{width:"145px",height:"145px",flexShrink:0}}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -276,7 +384,7 @@ function Dashboard({bud,txns,mT,income,expenses,nw}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px"}}>
         <div style={S.card}>
           <div style={S.h2}>Recent Transactions</div>
-          {mT.length===0?<p style={{color:t2,fontSize:"13px"}}>No transactions this month yet.</p>:
+          {mT.length===0?<p style={{color:t2,fontSize:"13px"}}>No transactions this month.</p>:
             mT.slice(0,7).map((t,i)=>(
               <div key={t.id} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 0",borderTop:i>0?`1px solid ${bdr}22`:""}}>
                 <div style={{width:"34px",height:"34px",borderRadius:"10px",background:(CATS[t.cat]?.c||"#555")+"25",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"15px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
@@ -291,7 +399,7 @@ function Dashboard({bud,txns,mT,income,expenses,nw}){
           {bud.slice(0,7).map(b=>{const sp=bSpent[b.cat]||0,pct=Math.min(sp/b.budg*100,100),ov=sp>b.budg;return(
             <div key={b.cat} style={{marginBottom:"10px"}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:"3px",fontSize:"12px"}}>
-                <span style={{color:t2}}>{CATS[b.cat]?.i} {b.cat}</span>
+                <span style={{color:t2}}>{CATS[b.cat]?.i||"📦"} {b.cat}</span>
                 <span style={{color:ov?"#ef4444":t1}}>{fmt(sp)}<span style={{color:t2}}> / {fmt(b.budg)}</span></span>
               </div>
               <div style={{background:"#374151",borderRadius:"99px",height:"5px"}}><div style={{background:ov?"#ef4444":CATS[b.cat]?.c||acc,borderRadius:"99px",height:"5px",width:`${pct}%`}}/></div>
@@ -302,7 +410,7 @@ function Dashboard({bud,txns,mT,income,expenses,nw}){
     </div>
   )
 }
-// ─── Accounts ─────────────────────────────────────────────────────────────────
+
 function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
   const [show,setShow]=useState(false)
   const [n,setN]=useState({name:"",type:"checking",inst:"",bal:""})
@@ -311,7 +419,7 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
   return(
     <div style={{padding:"22px"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"18px"}}>
-        <div><h1 style={S.h1}>Accounts</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{accts.length} accounts · data synced</p></div>
+        <div><h1 style={S.h1}>Accounts</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{accts.length} accounts</p></div>
         <button onClick={()=>setShow(true)} style={S.btn()}>+ Add Account</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"12px",marginBottom:"18px"}}>
@@ -319,7 +427,7 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
           <div key={s.l} style={S.card}><div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"8px"}}>{s.l}</div><div style={{fontSize:"24px",fontWeight:"700",color:s.c}}>{s.v}</div></div>
         ))}
       </div>
-      {accts.length===0&&<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🏦</div><p style={{color:t2}}>No accounts yet. Add your first account above.</p></div>}
+      {accts.length===0&&<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🏦</div><p style={{color:t2}}>No accounts yet.</p></div>}
       {Object.entries(grp).map(([type,list])=>(
         <div key={type} style={{...S.card,marginBottom:"12px"}}>
           <div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"12px"}}>{AT[type]?.l}</div>
@@ -327,7 +435,7 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
             <div key={a.id} style={{display:"flex",alignItems:"center",gap:"14px",padding:"12px 0",borderTop:i>0?`1px solid ${bdr}`:""}}>
               <div style={{width:"42px",height:"42px",borderRadius:"12px",background:acc+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"20px",flexShrink:0}}>{AT[type]?.i}</div>
               <div style={{flex:1,minWidth:0}}><div style={{fontWeight:"600",fontSize:"14px",color:t1}}>{a.name}</div><div style={{fontSize:"12px",color:t2}}>{a.inst}</div></div>
-              <div style={{textAlign:"right",flexShrink:0}}><div style={{fontWeight:"700",fontSize:"16px",color:a.bal>=0?"#10b981":"#ef4444"}}>{fmt(a.bal)}</div></div>
+              <div style={{fontWeight:"700",fontSize:"16px",color:a.bal>=0?"#10b981":"#ef4444"}}>{fmt(a.bal)}</div>
               <input style={{...S.inp,width:"110px",padding:"5px 8px",fontSize:"12px"}} type="number" placeholder="Update $" onBlur={async e=>{if(e.target.value!==""){await updAcct(a.id,{bal:parseFloat(e.target.value)});e.target.value=""}}}/>
               <button onClick={()=>delAcct(a.id)} style={{...S.btn("red"),padding:"5px 10px",fontSize:"12px"}}>✕</button>
             </div>
@@ -344,11 +452,12 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
     </div>
   )
 }
-// ─── Transactions ─────────────────────────────────────────────────────────────
-function Transactions({txns,addTxn,delTxn,updTxn,accts,toast}){
+
+function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,handleAddCat}){
   const [q,setQ]=useState(""),[cf,setCf]=useState("All")
   const [n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:null,note:""})
-  const csvRef=useRef()
+  const csvRef=useRef(),pdfRef=useRef()
+  const [pdfBusy,setPdfBusy]=useState(false)
   const add=async()=>{if(!n.merch||n.amt==="")return;await addTxn({...n,amt:parseFloat(n.amt),aid:n.aid?parseInt(n.aid):null});setN({date:"",merch:"",amt:"",cat:"Other",aid:null,note:""})}
   const handleCSV=async e=>{
     const file=e.target.files[0];if(!file)return
@@ -359,9 +468,25 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast}){
       const desc=row[des]||Object.values(row)[1]||""
       return{date:row[dk]||"",merch:desc,amt:parseFloat((row[amt]||"0").replace(/[^0-9.-]/g,""))||0,cat:autocat(desc),aid:null,note:""}
     }).filter(r=>r.merch&&r.merch.length>1)
-    let count=0
-    for(const row of parsed){await addTxn(row);count++}
-    toast(`✓ Imported ${count} transactions with keyword categorization`);e.target.value=""
+    let count=0;for(const row of parsed){await addTxn(row);count++}
+    toast(`✓ Imported ${count} transactions`);e.target.value=""
+  }
+  const handlePDF=async e=>{
+    const file=e.target.files[0];if(!file)return
+    setPdfBusy(true)
+    try{
+      const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(",")[1]);r.readAsDataURL(file)})
+      const parsed=await parsePDFWithGemini(b64)
+      if(!Array.isArray(parsed)||parsed.length===0)throw new Error("No transactions found — try CSV instead")
+      let count=0
+      for(const row of parsed){
+        if(!row.merch||row.amt===undefined)continue
+        await addTxn({date:row.date||"",merch:row.merch,amt:parseFloat(row.amt)||0,cat:row.cat||autocat(row.merch),aid:null,note:""})
+        count++
+      }
+      toast(`✓ Imported ${count} transactions from PDF`)
+    }catch(err){toast("PDF: "+err.message,"err")}
+    setPdfBusy(false);e.target.value=""
   }
   const fil=txns.filter(t=>(q===""||t.merch?.toLowerCase().includes(q.toLowerCase())||t.cat?.toLowerCase().includes(q.toLowerCase()))&&(cf==="All"||t.cat===cf)).sort((a,b)=>(b.date||"").localeCompare(a.date||""))
   const incT=fil.filter(t=>t.amt>0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0)
@@ -370,13 +495,15 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast}){
     <div style={{padding:"22px"}}>
       <div style={{marginBottom:"14px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-          <div><h1 style={S.h1}>Transactions</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{fil.length} shown · ↑{fmt(incT)} income · ↓{fmt(expT)} expenses</p></div>
+          <div><h1 style={S.h1}>Transactions</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}</p></div>
         </div>
         <div style={{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
           <input style={{...S.inp,flex:"1",minWidth:"140px"}} placeholder="Search…" value={q} onChange={e=>setQ(e.target.value)}/>
           <select style={S.sel} value={cf} onChange={e=>setCf(e.target.value)}><option>All</option>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
           <input ref={csvRef} type="file" accept=".csv" style={{display:"none"}} onChange={handleCSV}/>
+          <input ref={pdfRef} type="file" accept=".pdf" style={{display:"none"}} onChange={handlePDF}/>
           <button onClick={()=>csvRef.current?.click()} style={{...S.btn("green"),whiteSpace:"nowrap"}}>📂 Import CSV</button>
+          <button onClick={()=>pdfRef.current?.click()} disabled={pdfBusy} style={{...S.btn("purple"),whiteSpace:"nowrap"}}>{pdfBusy?"⏳ Reading…":"📄 Import PDF"}</button>
         </div>
       </div>
       <div style={{...S.card,marginBottom:"14px"}}>
@@ -385,18 +512,18 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast}){
           <input style={{...S.inp,width:"120px"}} type="date" value={n.date} onChange={e=>setN(p=>({...p,date:e.target.value}))}/>
           <input style={{...S.inp,flex:"1",minWidth:"130px"}} placeholder="Merchant / description" value={n.merch} onChange={e=>setN(p=>({...p,merch:e.target.value}))}/>
           <input style={{...S.inp,width:"120px"}} type="number" placeholder="Amount (neg=expense)" value={n.amt} onChange={e=>setN(p=>({...p,amt:e.target.value}))}/>
-          <select style={S.sel} value={n.cat} onChange={e=>setN(p=>({...p,cat:e.target.value}))}>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
+          <CatSelect value={n.cat} onChange={v=>setN(p=>({...p,cat:v}))} customCats={customCats} onAddCat={handleAddCat}/>
           {accts.length>0&&<select style={S.sel} value={n.aid||""} onChange={e=>setN(p=>({...p,aid:e.target.value}))}><option value="">Account</option>{accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>}
           <button style={S.btn("green")} onClick={add}>Add</button>
         </div>
       </div>
       <div style={S.card}>
-        {fil.length===0?<p style={{color:t2,textAlign:"center",padding:"30px"}}>No transactions yet. Import a CSV or add one above.</p>:
+        {fil.length===0?<p style={{color:t2,textAlign:"center",padding:"30px"}}>No transactions yet.</p>:
           fil.slice(0,100).map((t,i)=>(
             <div key={t.id} style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 6px",borderBottom:i<Math.min(fil.length,100)-1?`1px solid ${bdr}22`:""}}>
               <div style={{width:"36px",height:"36px",borderRadius:"10px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:"13px",fontWeight:"500",color:t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.merch}</div><div style={{fontSize:"11px",color:t2}}>{t.date}</div></div>
-              <select style={{...S.sel,fontSize:"11px",padding:"4px 7px"}} value={t.cat||"Other"} onChange={e=>updTxn(t.id,{cat:e.target.value})}>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
+              <CatSelect value={t.cat||"Other"} onChange={v=>updTxn(t.id,{cat:v})} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"11px",padding:"4px 7px"}}/>
               <div style={{fontWeight:"700",fontSize:"14px",color:t.amt>=0?"#10b981":t1,minWidth:"72px",textAlign:"right"}}>{t.amt>=0?"+":""}{fmt(Math.abs(t.amt||0))}</div>
               <button onClick={()=>delTxn(t.id)} style={{...S.btn("gray"),padding:"4px 8px",fontSize:"12px"}}>✕</button>
             </div>
@@ -407,15 +534,15 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast}){
     </div>
   )
 }
-// ─── Budget ───────────────────────────────────────────────────────────────────
-function Budget({txns,bud,updBudg}){
+
+function Budget({txns,bud,updBudg,CATS}){
   const [edit,setEdit]=useState(null),[val,setVal]=useState("")
   const ms=`${cyr}-${String(cmo+1).padStart(2,"0")}`,sp={}
   txns.filter(t=>t.date?.startsWith(ms)&&t.amt<0&&t.cat!=="Transfer").forEach(t=>{sp[t.cat]=(sp[t.cat]||0)+Math.abs(t.amt)})
   const tB=bud.reduce((s,b)=>s+b.budg,0),tS=bud.reduce((s,b)=>s+(sp[b.cat]||0),0)
   return(
     <div style={{padding:"22px"}}>
-      <h1 style={S.h1}>Budget</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>{MOS[cmo]} {cyr} · Click budget amount to edit · changes save automatically</p>
+      <h1 style={S.h1}>Budget</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>{MOS[cmo]} {cyr} · Click budget amount to edit</p>
       <div style={{...S.card,marginBottom:"18px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}><span style={{fontWeight:"600",color:t1}}>Monthly Total</span><span style={{fontSize:"13px",color:t2}}>{fmt(tS)} of {fmt(tB)}</span></div>
         <div style={{background:"#374151",borderRadius:"99px",height:"10px",marginBottom:"14px"}}><div style={{background:tS>tB?"#ef4444":acc,borderRadius:"99px",height:"10px",width:`${Math.min(tS/tB*100,100)}%`}}/></div>
@@ -429,7 +556,7 @@ function Budget({txns,bud,updBudg}){
         {bud.map(b=>{const s=sp[b.cat]||0,pct=Math.min(s/b.budg*100,100),ov=s>b.budg;return(
           <div key={b.cat} style={S.card}>
             <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"12px"}}>
-              <div style={{width:"38px",height:"38px",borderRadius:"10px",background:(CATS[b.cat]?.c||acc)+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px"}}>{CATS[b.cat]?.i}</div>
+              <div style={{width:"38px",height:"38px",borderRadius:"10px",background:(CATS[b.cat]?.c||acc)+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px"}}>{CATS[b.cat]?.i||"📦"}</div>
               <div style={{flex:1}}><div style={{fontWeight:"600",fontSize:"14px",color:t1}}>{b.cat}</div><div style={{fontSize:"12px",color:ov?"#ef4444":"#10b981"}}>{ov?`$${(s-b.budg).toFixed(0)} over`:`$${(b.budg-s).toFixed(0)} left`}</div></div>
             </div>
             <div style={{background:"#374151",borderRadius:"99px",height:"7px",marginBottom:"10px"}}><div style={{background:ov?"#ef4444":CATS[b.cat]?.c||acc,borderRadius:"99px",height:"7px",width:`${pct}%`}}/></div>
@@ -446,7 +573,7 @@ function Budget({txns,bud,updBudg}){
     </div>
   )
 }
-// ─── Cash Flow ────────────────────────────────────────────────────────────────
+
 function CashFlow({txns}){
   const [sel,setSel]=useState(cmo)
   const cfData=MOS.map((m,i)=>{
@@ -458,7 +585,7 @@ function CashFlow({txns}){
   const ytdI=cfData.slice(0,cmo+1).reduce((s,d)=>s+d.income,0),ytdE=cfData.slice(0,cmo+1).reduce((s,d)=>s+d.expenses,0)
   return(
     <div style={{padding:"22px"}}>
-      <h1 style={S.h1}>Cash Flow</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>Click a bar to see monthly detail · {cyr}</p>
+      <h1 style={S.h1}>Cash Flow</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>Click a bar to see monthly detail</p>
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"12px",marginBottom:"16px"}}>
         {[{l:`${MOS[sel]} Income`,v:fmt(d.income),c:"#10b981"},{l:`${MOS[sel]} Expenses`,v:fmt(d.expenses),c:"#ef4444"},{l:`${MOS[sel]} Net`,v:fmt(net),c:net>=0?"#10b981":"#ef4444"}].map(s=>(
           <div key={s.l} style={S.card}><div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"8px"}}>{s.l}</div><div style={{fontSize:"22px",fontWeight:"700",color:s.c}}>{s.v}</div></div>
@@ -488,7 +615,7 @@ function CashFlow({txns}){
     </div>
   )
 }
-// ─── Net Worth ────────────────────────────────────────────────────────────────
+
 function NetWorthView({accts,nw,assets,liabs,txns}){
   const nwData=MOS.map((m,i)=>{
     const ms=`${cyr}-${String(i+1).padStart(2,"0")}`
@@ -496,7 +623,7 @@ function NetWorthView({accts,nw,assets,liabs,txns}){
     return{m,net}
   })
   let running=nw
-  const nwTrend=nwData.map((d,i)=>{const v=running;if(i===cmo)return{m:d.m,nw:v};running-=d.net;return{m:d.m,nw:running}}).reverse().map((d,i,arr)=>{const cum=arr.slice(0,i+1).reduce((s,x)=>s+x.nw,0)/arr.length;return{m:d.m,nw:Math.round(d.nw)}})
+  const nwTrend=[...nwData].reverse().map((d,i)=>{const v=running;running-=d.net;return{m:d.m,nw:Math.round(v)}}).reverse()
   return(
     <div style={{padding:"22px"}}>
       <h1 style={S.h1}>Net Worth</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>Your complete financial picture</p>
@@ -506,7 +633,7 @@ function NetWorthView({accts,nw,assets,liabs,txns}){
         ))}
       </div>
       <div style={{...S.card,marginBottom:"14px"}}>
-        <div style={S.h2}>Estimated Net Worth — {cyr}</div>
+        <div style={S.h2}>Net Worth Trend — {cyr}</div>
         <ResponsiveContainer width="100%" height={220}>
           <AreaChart data={nwTrend}>
             <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={acc} stopOpacity={0.35}/><stop offset="95%" stopColor={acc} stopOpacity={0}/></linearGradient></defs>
@@ -535,7 +662,7 @@ function NetWorthView({accts,nw,assets,liabs,txns}){
     </div>
   )
 }
-// ─── Goals ────────────────────────────────────────────────────────────────────
+
 function Goals({goals,addGoal,delGoal,updGoal}){
   const [show,setShow]=useState(false)
   const [n,setN]=useState({name:"",target:"",current:"",deadline:"",icon:"🎯",color:"#8b5cf6"})
@@ -546,7 +673,7 @@ function Goals({goals,addGoal,delGoal,updGoal}){
         <div><h1 style={S.h1}>Goals</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{goals.length} active goals</p></div>
         <button onClick={()=>setShow(true)} style={S.btn()}>+ New Goal</button>
       </div>
-      {goals.length===0&&<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🎯</div><p style={{color:t2}}>No goals yet. Create your first savings goal!</p></div>}
+      {goals.length===0&&<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🎯</div><p style={{color:t2}}>No goals yet.</p></div>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(285px,1fr))",gap:"14px"}}>
         {goals.map(g=>{const pct=Math.min((g.current||0)/(g.target||1)*100,100),rem=(g.target||0)-(g.current||0),done=pct>=100;return(
           <div key={g.id} style={{...S.card,border:done?`1px solid #10b98155`:`1px solid ${bdr}`}}>
@@ -560,9 +687,7 @@ function Goals({goals,addGoal,delGoal,updGoal}){
             <div style={{background:"#374151",borderRadius:"99px",height:"10px",marginBottom:"10px"}}><div style={{background:done?"#10b981":g.color||acc,borderRadius:"99px",height:"10px",width:`${pct}%`}}/></div>
             <div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}><span style={{color:t1,fontWeight:"700"}}>{fmt(g.current||0)} saved</span><span style={{color:acc,fontWeight:"700"}}>{pct.toFixed(0)}%</span></div>
             <div style={{display:"flex",justifyContent:"space-between",fontSize:"12px",color:t2,marginBottom:"12px"}}><span>{done?"🎉 Goal reached!":fmt(rem)+" to go"}</span><span>Goal: {fmt(g.target||0)}</span></div>
-            <div style={{display:"flex",gap:"6px"}}>
-              <input style={{...S.inp,flex:1,padding:"5px 8px",fontSize:"12px"}} type="number" placeholder="Add $ contribution" onBlur={async e=>{if(e.target.value){await updGoal(g.id,{current:Math.min((g.current||0)+parseFloat(e.target.value),(g.target||0))});e.target.value=""}}}/>
-            </div>
+            <input style={{...S.inp,fontSize:"12px",padding:"5px 8px"}} type="number" placeholder="Add $ contribution" onBlur={async e=>{if(e.target.value){await updGoal(g.id,{current:Math.min((g.current||0)+parseFloat(e.target.value),(g.target||0))});e.target.value=""}}}/>
           </div>
         )})}
       </div>
@@ -575,7 +700,7 @@ function Goals({goals,addGoal,delGoal,updGoal}){
     </div>
   )
 }
-// ─── Mileage ──────────────────────────────────────────────────────────────────
+
 function Mileage({trips,addTrip,delTrip,toast}){
   const [tracking,setTracking]=useState(false),[purpose,setPurpose]=useState(""),[type,setType]=useState("Property"),[curMi,setCurMi]=useState(0)
   const [m,setM]=useState({date:"",purpose:"",type:"Property",miles:""})
@@ -600,7 +725,7 @@ function Mileage({trips,addTrip,delTrip,toast}){
   return(
     <div style={{padding:"22px"}}>
       <h1 style={S.h1}>Mileage Tracker</h1>
-      <p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>2025 IRS rates: Business & Property 67¢/mi · Medical 21¢/mi · Charity 14¢/mi</p>
+      <p style={{color:t2,fontSize:"13px",margin:"4px 0 16px"}}>2025 IRS: Business/Property 67¢/mi · Medical 21¢/mi · Charity 14¢/mi</p>
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"12px",marginBottom:"16px"}}>
         {[{l:"Total Miles",v:tMi.toFixed(1)+" mi",c:t1},{l:"Total Deduction",v:fmt(tDed),c:"#10b981"},{l:"Trips Logged",v:trips.length,c:acc}].map(s=>(
           <div key={s.l} style={S.card}><div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"8px"}}>{s.l}</div><div style={{fontSize:"24px",fontWeight:"700",color:s.c}}>{s.v}</div></div>
@@ -609,14 +734,14 @@ function Mileage({trips,addTrip,delTrip,toast}){
       <div style={{...S.card,marginBottom:"14px"}}>
         <div style={S.h2}>🛰️ GPS Tracker</div>
         <div style={{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"center",marginBottom:"12px"}}>
-          <input style={{...S.inp,flex:1,minWidth:"200px"}} placeholder="Trip purpose (e.g. Home Depot — apt supplies)" value={purpose} onChange={e=>setPurpose(e.target.value)} disabled={tracking}/>
+          <input style={{...S.inp,flex:1,minWidth:"200px"}} placeholder="Trip purpose (e.g. Apt supply run)" value={purpose} onChange={e=>setPurpose(e.target.value)} disabled={tracking}/>
           <select style={S.sel} value={type} onChange={e=>setType(e.target.value)} disabled={tracking}>{MTYPES.map(t=><option key={t}>{t}</option>)}</select>
           {!tracking?<button style={S.btn("green")} onClick={start}>▶ Start Trip</button>:<button style={{...S.btn("red"),animation:"pulse 1s infinite"}} onClick={stop}>⏹ Stop & Save</button>}
         </div>
         {tracking&&<div style={{background:"#0f2027",border:"1px solid #22c55e",borderRadius:"10px",padding:"14px",display:"flex",alignItems:"center",gap:"14px"}}><div style={{width:"10px",height:"10px",borderRadius:"99px",background:"#22c55e",boxShadow:"0 0 0 4px #22c55e33",flexShrink:0}}/><div><div style={{color:"#86efac",fontWeight:"700",fontSize:"22px"}}>{curMi.toFixed(2)} miles</div><div style={{color:t2,fontSize:"12px"}}>GPS active · keep screen on</div></div></div>}
       </div>
       <div style={{...S.card,marginBottom:"14px"}}>
-        <div style={S.h2}>✏️ Add Manual Trip</div>
+        <div style={S.h2}>✏️ Manual Trip</div>
         <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"flex-end"}}>
           <input style={{...S.inp,width:"120px"}} type="date" value={m.date} onChange={e=>setM(p=>({...p,date:e.target.value}))}/>
           <input style={{...S.inp,flex:"1",minWidth:"140px"}} placeholder="Purpose" value={m.purpose} onChange={e=>setM(p=>({...p,purpose:e.target.value}))}/>
@@ -626,7 +751,7 @@ function Mileage({trips,addTrip,delTrip,toast}){
         </div>
       </div>
       <div style={S.card}>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:"14px"}}><div style={S.h2}>Trip Log ({trips.length})</div><div style={{textAlign:"right"}}><div style={{color:"#10b981",fontWeight:"700"}}>{fmt(tDed)}</div><div style={{fontSize:"12px",color:t2}}>{tMi.toFixed(1)} total miles</div></div></div>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:"14px"}}><div style={S.h2}>Trip Log ({trips.length})</div><div style={{textAlign:"right"}}><div style={{color:"#10b981",fontWeight:"700"}}>{fmt(tDed)}</div><div style={{fontSize:"12px",color:t2}}>{tMi.toFixed(1)} mi</div></div></div>
         {trips.length===0?<p style={{color:t2}}>No trips yet.</p>:(
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
             <thead><tr>{["Date","Purpose","Type","Miles","Rate","Deduction",""].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",color:t2,borderBottom:`1px solid ${bdr}`,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.06em"}}>{h}</th>)}</tr></thead>
@@ -648,9 +773,9 @@ function Mileage({trips,addTrip,delTrip,toast}){
     </div>
   )
 }
-// ─── Receipts ─────────────────────────────────────────────────────────────────
-function Receipts({rcpts,addRcpt,delRcpt,updRcpt,toast}){
-  const [busy,setBusy]=useState(false),[show,setShow]=useState(false)
+
+function Receipts({rcpts,addRcpt,delRcpt,updRcpt,toast,CATS,customCats,handleAddCat}){
+  const [busy,setBusy]=useState(false),[show,setShow]=useState(false),[zoom,setZoom]=useState(null)
   const [n,setN]=useState({date:"",merchant:"",amount:"",cat:"Other",note:""})
   const fileRef=useRef()
   const handleFile=async e=>{
@@ -665,7 +790,7 @@ function Receipts({rcpts,addRcpt,delRcpt,updRcpt,toast}){
       let info={merchant:"",date:new Date().toISOString().split("T")[0],amount:0,category:"Other"}
       try{info=await scanWithGemini(b64,file.type)}catch(e){toast("AI scan failed — fill in manually","err")}
       await addRcpt({merchant:info.merchant||"",date:info.date||new Date().toISOString().split("T")[0],amount:info.amount||0,cat:info.category||"Other",note:"",image_url:imageUrl})
-      toast(`✓ Receipt saved: ${info.merchant||"Unknown"} · ${fmt(info.amount||0)}`)
+      toast(`✓ Receipt saved: ${info.merchant||"Unknown"}`)
     }catch(err){toast("Upload failed: "+err.message,"err")}
     setBusy(false);e.target.value=""
   }
@@ -673,25 +798,36 @@ function Receipts({rcpts,addRcpt,delRcpt,updRcpt,toast}){
   const total=rcpts.reduce((s,r)=>s+(r.amount||0),0)
   return(
     <div style={{padding:"22px"}}>
+      {zoom&&(
+        <div onClick={()=>setZoom(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.93)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,cursor:"zoom-out",padding:"20px"}}>
+          <img src={zoom} alt="receipt" style={{maxWidth:"100%",maxHeight:"100%",borderRadius:"10px",objectFit:"contain"}}/>
+          <div style={{position:"absolute",top:"16px",right:"20px",color:"#fff",fontSize:"32px",cursor:"pointer",lineHeight:1,background:"rgba(0,0,0,.5)",borderRadius:"50%",width:"40px",height:"40px",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</div>
+        </div>
+      )}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"14px",flexWrap:"wrap",gap:"10px"}}>
-        <div><h1 style={S.h1}>Receipt Vault</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{rcpts.length} receipts · {fmt(total)} total · photos stored in cloud</p></div>
+        <div><h1 style={S.h1}>Receipt Vault</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{rcpts.length} receipts · {fmt(total)} total · click photo to enlarge</p></div>
         <div style={{display:"flex",gap:"8px"}}>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
           <button onClick={()=>fileRef.current?.click()} style={S.btn("green")} disabled={busy}>{busy?"⏳ Scanning…":"📷 Take / Upload Photo"}</button>
           <button onClick={()=>setShow(true)} style={S.btn("gray")}>✏️ Manual Entry</button>
         </div>
       </div>
-      {rcpts.length===0?<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🧾</div><p style={{color:t2}}>No receipts yet. Take a photo or add manually.</p></div>:(
+      {rcpts.length===0?<div style={{...S.card,textAlign:"center",padding:"40px"}}><div style={{fontSize:"32px",marginBottom:"12px"}}>🧾</div><p style={{color:t2}}>No receipts yet.</p></div>:(
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(245px,1fr))",gap:"14px"}}>
           {rcpts.map(r=>(
             <div key={r.id} style={S.card}>
-              {r.image_url?<img src={r.image_url} alt="receipt" style={{width:"100%",borderRadius:"8px",marginBottom:"10px",maxHeight:"145px",objectFit:"cover"}}/>:<div style={{width:"100%",height:"75px",borderRadius:"8px",marginBottom:"10px",background:"#374151",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"28px"}}>🧾</div>}
+              {r.image_url
+                ?<img src={r.image_url} alt="receipt" onClick={()=>setZoom(r.image_url)} style={{width:"100%",borderRadius:"8px",marginBottom:"10px",maxHeight:"145px",objectFit:"cover",cursor:"zoom-in",transition:"opacity .2s"}} onMouseOver={e=>e.target.style.opacity=".85"} onMouseOut={e=>e.target.style.opacity="1"}/>
+                :<div style={{width:"100%",height:"75px",borderRadius:"8px",marginBottom:"10px",background:"#374151",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"28px"}}>🧾</div>
+              }
               <input style={{...S.inp,marginBottom:"6px",padding:"6px 10px",fontSize:"13px"}} value={r.merchant||""} onChange={e=>updRcpt(r.id,{merchant:e.target.value})} placeholder="Merchant"/>
               <div style={{display:"flex",gap:"6px",marginBottom:"6px"}}>
                 <input style={{...S.inp,flex:1,padding:"6px 10px",fontSize:"13px"}} type="number" value={r.amount||""} onChange={e=>updRcpt(r.id,{amount:parseFloat(e.target.value)||0})} placeholder="Amount"/>
                 <input style={{...S.inp,flex:1,padding:"6px 10px",fontSize:"12px"}} type="date" value={r.date||""} onChange={e=>updRcpt(r.id,{date:e.target.value})}/>
               </div>
-              <select style={{...S.sel,width:"100%",marginBottom:"6px",fontSize:"12px",padding:"6px 10px"}} value={r.cat||"Other"} onChange={e=>updRcpt(r.id,{cat:e.target.value})}>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
+              <div style={{marginBottom:"6px"}}>
+                <CatSelect value={r.cat||"Other"} onChange={v=>updRcpt(r.id,{cat:v})} customCats={customCats} onAddCat={handleAddCat} style={{width:"100%",fontSize:"12px",padding:"6px 10px"}}/>
+              </div>
               <input style={{...S.inp,marginBottom:"8px",padding:"6px 10px",fontSize:"12px"}} value={r.note||""} onChange={e=>updRcpt(r.id,{note:e.target.value})} placeholder="Notes (e.g. Apt 2B repair)"/>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{color:"#10b981",fontWeight:"700",fontSize:"16px"}}>{fmt(r.amount||0)}</span>
@@ -702,17 +838,17 @@ function Receipts({rcpts,addRcpt,delRcpt,updRcpt,toast}){
         </div>
       )}
       {show&&<Modal title="Manual Receipt Entry" onClose={()=>setShow(false)}>
-        {[{l:"Merchant",k:"merchant",t:"text",ph:"e.g. Home Depot"},{l:"Amount ($)",k:"amount",t:"number",ph:"0.00"},{l:"Date",k:"date",t:"date",ph:""},{l:"Notes",k:"note",t:"text",ph:"e.g. Apt 2B faucet repair"}].map(f=>(
+        {[{l:"Merchant",k:"merchant",t:"text",ph:"e.g. Home Depot"},{l:"Amount ($)",k:"amount",t:"number",ph:"0.00"},{l:"Date",k:"date",t:"date",ph:""},{l:"Notes",k:"note",t:"text",ph:"e.g. Apt 2B repair"}].map(f=>(
           <div key={f.k} style={{marginBottom:"12px"}}><label style={S.lbl}>{f.l}</label><input style={S.inp} type={f.t} placeholder={f.ph} value={n[f.k]} onChange={e=>setN(p=>({...p,[f.k]:e.target.value}))}/></div>
         ))}
-        <div style={{marginBottom:"16px"}}><label style={S.lbl}>Category</label><select style={{...S.sel,width:"100%"}} value={n.cat} onChange={e=>setN(p=>({...p,cat:e.target.value}))}>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select></div>
+        <div style={{marginBottom:"16px"}}><label style={S.lbl}>Category</label><CatSelect value={n.cat} onChange={v=>setN(p=>({...p,cat:v}))} customCats={customCats} onAddCat={handleAddCat} style={{width:"100%"}}/></div>
         <div style={{display:"flex",gap:"8px"}}><button onClick={addManual} style={{...S.btn(),flex:1}}>Save Receipt</button><button onClick={()=>setShow(false)} style={{...S.btn("gray"),flex:1}}>Cancel</button></div>
       </Modal>}
     </div>
   )
 }
-// ─── Tax Prep ─────────────────────────────────────────────────────────────────
-function TaxPrep({txns,trips,rcpts,ckd,toggleCk}){
+
+function TaxPrep({txns,trips,rcpts,ckd,toggleCk,CATS}){
   const DCAT=["Healthcare","Property","Housing","Utilities"]
   const TMAP={Healthcare:"Medical & Dental",Property:"Property Repairs & Maint.",Housing:"Mortgage Interest",Utilities:"Property Utilities"}
   const dTxns=txns.filter(t=>t.amt<0&&DCAT.includes(t.cat))
@@ -729,7 +865,7 @@ function TaxPrep({txns,trips,rcpts,ckd,toggleCk}){
   return(
     <div style={{padding:"22px"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"16px",flexWrap:"wrap",gap:"10px"}}>
-        <div><h1 style={S.h1}>Tax Prep</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>Tax year {cyr} · all deductible data in one place</p></div>
+        <div><h1 style={S.h1}>Tax Prep</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>Tax year {cyr}</p></div>
         <button onClick={exportCSV} style={S.btn("green")}>⬇️ Export CSV for TurboTax</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"12px",marginBottom:"16px"}}>
@@ -740,11 +876,11 @@ function TaxPrep({txns,trips,rcpts,ckd,toggleCk}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px",marginBottom:"14px"}}>
         <div style={S.card}>
           <div style={S.h2}>Deductible Transactions</div>
-          {byCat.length===0?<p style={{color:t2,fontSize:"13px"}}>No deductible transactions found. Check categories in Transactions.</p>:(
+          {byCat.length===0?<p style={{color:t2,fontSize:"13px"}}>No deductible transactions found.</p>:(
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
               <thead><tr>{["Category","TurboTax Section","Amount"].map(h=><th key={h} style={{padding:"8px 6px",textAlign:"left",color:t2,borderBottom:`1px solid ${bdr}`,fontWeight:"600",fontSize:"10px",textTransform:"uppercase",letterSpacing:"0.06em"}}>{h}</th>)}</tr></thead>
               <tbody>{byCat.map(c=>(
-                <tr key={c.cat}><td style={{padding:"10px 6px",borderBottom:`1px solid ${bdr}22`}}><span style={{background:(CATS[c.cat]?.c||"#555")+"22",color:CATS[c.cat]?.c||t2,borderRadius:"20px",padding:"2px 10px",fontSize:"11px",fontWeight:"600"}}>{CATS[c.cat]?.i} {c.cat}</span></td><td style={{padding:"10px 6px",color:t2,borderBottom:`1px solid ${bdr}22`,fontSize:"12px"}}>{c.label}</td><td style={{padding:"10px 6px",color:"#10b981",fontWeight:"700",borderBottom:`1px solid ${bdr}22`}}>{fmt(c.total)}</td></tr>
+                <tr key={c.cat}><td style={{padding:"10px 6px",borderBottom:`1px solid ${bdr}22`}}><span style={{background:(CATS[c.cat]?.c||"#555")+"22",color:CATS[c.cat]?.c||t2,borderRadius:"20px",padding:"2px 10px",fontSize:"11px",fontWeight:"600"}}>{CATS[c.cat]?.i||"📦"} {c.cat}</span></td><td style={{padding:"10px 6px",color:t2,borderBottom:`1px solid ${bdr}22`,fontSize:"12px"}}>{c.label}</td><td style={{padding:"10px 6px",color:"#10b981",fontWeight:"700",borderBottom:`1px solid ${bdr}22`}}>{fmt(c.total)}</td></tr>
               ))}</tbody>
             </table>
           )}
@@ -787,7 +923,7 @@ function TaxPrep({txns,trips,rcpts,ckd,toggleCk}){
     </div>
   )
 }
-// ─── Modal ────────────────────────────────────────────────────────────────────
+
 function Modal({title,children,onClose}){
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,padding:"20px"}} onClick={onClose}>
