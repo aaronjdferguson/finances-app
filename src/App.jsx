@@ -88,30 +88,37 @@ const parseCSVRows = (text) => {
     if(lines.length<2)return[]
     const hdrs=parseCSVLine(lines[0]).map(h=>h.toLowerCase().replace(/[^a-z0-9 ]/g,"").trim())
     const find=(...keys)=>hdrs.findIndex(h=>keys.some(k=>h===k||h.includes(k)))
-    const di=find("date","trans date","post date"), dsi=find("description","desc","name","memo","original description","narr"), ai=find("amount","amt"), ti=find("type"), dri=find("debit","withdrawal"), cri=find("credit","deposit")
+    const di=find("date","trans date","post date")
+    const dsi=find("description","desc","name","original description","narr")
+    const ai=find("amount","amt")
+    const ti=find("type")
+    const dri=find("debit","withdrawal")
+    const cri=find("credit","deposit")
+    const acctColIdx=find("account")
+    // memo is intentionally excluded from dsi to avoid grabbing wrong column
     return lines.slice(1).map(line=>{
       if(!line.trim())return null
       const vals=parseCSVLine(line)
-      const row={}; hdrs.forEach((h,j)=>row[h]=vals[j]||"")
-      const desc=(di>=0?vals[dsi]:"")||Object.values(row)[1]||""
+      const desc=(dsi>=0?vals[dsi]:"")||""
       if(!desc||desc.length<2)return null
       let amt=0
       if(ti>=0){
-        // BECU-style: Type column = "Debit" / "Credit"
         const type=(vals[ti]||"").trim().toLowerCase()
         const raw=parseFloat((vals[ai]||"0").replace(/[^0-9.-]/g,""))||0
-        amt=type==="debit"?-Math.abs(raw):type==="credit"?Math.abs(raw):raw
+        if(type==="debit") amt=-Math.abs(raw)
+        else if(type==="credit") amt=Math.abs(raw)
+        else amt=raw // unknown type, use as-is
       } else if(dri>=0&&cri>=0){
-        // Two-column: Debit + Credit
         const dv=parseFloat((vals[dri]||"0").replace(/[^0-9.-]/g,""))||0
         const cv=parseFloat((vals[cri]||"0").replace(/[^0-9.-]/g,""))||0
         amt=cv>0?cv:-dv
       } else if(ai>=0){
         amt=parseFloat((vals[ai]||"0").replace(/[^0-9.-]/g,""))||0
       }
-      return{date:normalizeDate(di>=0?vals[di]:""),merch:desc.replace(/^"|"$/g,""),amt,cat:autocat(desc),member:"",note:""}
+      const csvAcct=acctColIdx>=0?(vals[acctColIdx]||""):""
+      return{date:normalizeDate(di>=0?vals[di]:""),merch:desc.replace(/^"|"$/g,""),amt,cat:autocat(desc),member:"",note:"",csvAcct}
     }).filter(Boolean)
-  } catch { return [] }
+  } catch(err) { console.error("CSV parse error:",err); return [] }
 }
 
 // ─── Category Selector ────────────────────────────────────────────────────────
@@ -162,70 +169,97 @@ function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onCl
   const[selAcct,setSelAcct]=useState(detectedAcctId||"")
   const[preview,setPreview]=useState(rows)
   const[bulkCat,setBulkCat]=useState("")
+  const[flipSigns,setFlipSigns]=useState(false)
   const[importing,setImporting]=useState(false)
   const grouped={}; accts.forEach(a=>{const g=a.inst||"Other";if(!grouped[g])grouped[g]=[];grouped[g].push(a)})
-  const withDup=preview.map(r=>({...r,isDup:existingTxns.some(e=>e.date===r.date&&Math.abs((e.amt||0)-(r.amt||0))<0.02&&(e.merch||"").toLowerCase().trim()===(r.merch||"").toLowerCase().trim())}))
+  const csvAccts=[...new Set(rows.map(r=>r.csvAcct).filter(Boolean))]
+  const isMultiAcct=csvAccts.length>1
+  const displayRows=preview.map(r=>({...r,amt:flipSigns?-r.amt:r.amt}))
+  const withDup=displayRows.map(r=>({...r,isDup:existingTxns.some(e=>e.date===r.date&&Math.abs((e.amt||0)-(r.amt||0))<0.02&&(e.merch||"").toLowerCase().trim()===(r.merch||"").toLowerCase().trim())}))
   const dupCount=withDup.filter(r=>r.isDup).length
+  const posCount=withDup.filter(r=>r.amt>0).length
+  const negCount=withDup.filter(r=>r.amt<0).length
   const doImport=async(skipDups)=>{
     setImporting(true)
     const toSave=skipDups?withDup.filter(r=>!r.isDup):withDup
-    await onImport(toSave.map(r=>({...r,aid:selAcct?parseInt(selAcct):null,isDup:undefined})))
+    await onImport(toSave.map(r=>{
+      const{isDup,csvAcct,...rest}=r
+      let aid=selAcct?parseInt(selAcct):null
+      if(!aid&&csvAcct){const m4=csvAcct.match(/(\d{4})/);if(m4){const m=accts.find(a=>a.name?.includes(m4[1]));if(m)aid=m.id}}
+      return{...rest,aid,note:rest.note||(csvAcct&&!aid?csvAcct:"")}
+    }))
     setImporting(false); onClose()
   }
   return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:"16px"}} onClick={onClose}>
-      <div style={{...S.card,width:"100%",maxWidth:"700px",maxHeight:"92vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:"14px"}} onClick={e=>e.stopPropagation()}>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,padding:"16px"}}>
+      <div style={{background:card,border:`1px solid ${bdr}`,borderRadius:"14px",padding:"22px",width:"100%",maxWidth:"740px",maxHeight:"92vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:"16px",boxShadow:"0 12px 60px rgba(0,0,0,.9)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h3 style={{...S.h2,margin:0}}>📥 Import Preview — {rows.length} transactions</h3>
-          <button onClick={onClose} style={{background:"none",border:"none",color:t2,cursor:"pointer",fontSize:"20px"}}>✕</button>
+          <h3 style={{fontSize:"16px",fontWeight:"700",color:t1,margin:0}}>📥 Import Preview — {rows.length} transactions</h3>
+          <button onClick={onClose} style={{background:"#374151",border:"none",color:t1,cursor:"pointer",fontSize:"18px",lineHeight:1,padding:"6px 10px",borderRadius:"8px"}}>✕</button>
         </div>
+        {/* Sign sanity check */}
+        <div style={{background:"#0d1117",border:`1px solid ${bdr}`,borderRadius:"8px",padding:"12px 14px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"10px"}}>
+            <div style={{fontSize:"13px",color:t2}}>
+              Detected: <span style={{color:"#10b981",fontWeight:"600"}}>↑ {posCount} income</span> · <span style={{color:"#f87171",fontWeight:"600"}}>↓ {negCount} expenses</span>
+              {negCount===0&&posCount>0&&<span style={{color:"#f59e0b",marginLeft:"8px"}}>— all positive, flip signs if these are expenses</span>}
+            </div>
+            <label style={{display:"flex",alignItems:"center",gap:"8px",cursor:"pointer",color:t2,fontSize:"13px",userSelect:"none"}}>
+              <input type="checkbox" checked={flipSigns} onChange={e=>setFlipSigns(e.target.checked)} style={{accentColor:acc,width:"16px",height:"16px"}}/>
+              Flip all signs
+            </label>
+          </div>
+        </div>
+        {/* Multi-account notice */}
+        {isMultiAcct&&<div style={{background:"#1e3a5f55",border:"1px solid #3b82f655",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#93c5fd"}}>📂 Multi-account export — {csvAccts.length} accounts detected. Account names will be saved in the note field. Add accounts in Accounts tab to enable auto-matching by last 4 digits.</div>}
         {/* Account picker */}
         <div>
-          <label style={S.lbl}>Which account is this from?{last4&&<span style={{color:"#f59e0b",marginLeft:"6px"}}>Account ending in {last4} detected</span>}</label>
-          <select style={{...S.sel,width:"100%"}} value={selAcct} onChange={e=>setSelAcct(e.target.value)}>
-            <option value="">— Unassigned —</option>
+          <label style={{...S.lbl,marginBottom:"6px"}}>{isMultiAcct?"Override account for all (optional)":"Which account is this from?"}{last4&&<span style={{color:"#f59e0b",marginLeft:"8px"}}>Account ending {last4} detected</span>}</label>
+          <select style={{...S.sel,width:"100%",fontSize:"14px",padding:"10px 12px"}} value={selAcct} onChange={e=>setSelAcct(e.target.value)}>
+            <option value="">{isMultiAcct?"— Auto-match by last 4 digits —":"— Unassigned —"}</option>
             {Object.entries(grouped).map(([inst,list])=>(
               <optgroup key={inst} label={inst}>
                 {list.map(a=><option key={a.id} value={a.id}>{AT[a.type]?.i} {a.name}</option>)}
               </optgroup>
             ))}
           </select>
-          {last4&&!selAcct&&<p style={{fontSize:"12px",color:"#f59e0b",margin:"4px 0 0"}}>⚠️ Could not auto-match account ending in {last4} — please select above</p>}
         </div>
         {/* Bulk category */}
-        <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
-          <span style={{fontSize:"12px",color:t2,flexShrink:0}}>Apply category to all:</span>
-          <CatSelect value={bulkCat||"Other"} onChange={v=>{setBulkCat(v);setPreview(p=>p.map(r=>({...r,cat:v})))}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"12px",padding:"5px 8px"}}/>
+        <div style={{display:"flex",gap:"10px",alignItems:"center"}}>
+          <span style={{fontSize:"13px",color:t2,flexShrink:0}}>Apply category to all:</span>
+          <CatSelect value={bulkCat||"Other"} onChange={v=>{setBulkCat(v);setPreview(p=>p.map(r=>({...r,cat:v})))}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"13px"}}/>
         </div>
-        {/* Duplicate warning */}
-        {dupCount>0&&<div style={{background:"#78350f33",border:"1px solid #f59e0b55",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#fbbf24"}}>⚠️ {dupCount} likely duplicate{dupCount!==1?"s":""} detected — same date, amount, and merchant already in your transactions</div>}
+        {/* Dupe warning */}
+        {dupCount>0&&<div style={{background:"#78350f44",border:"1px solid #f59e0b66",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#fbbf24"}}>⚠️ {dupCount} likely duplicate{dupCount!==1?"s":""} — same date, amount &amp; merchant already exist. Use "Skip duplicates" below.</div>}
         {/* Preview table */}
-        <div style={{overflowX:"auto",borderRadius:"8px",border:`1px solid ${bdr}`}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:"12px"}}>
-            <thead><tr style={{background:"#0d1117"}}>{["Date","Merchant","Amount","Category","Dup"].map(h=><th key={h} style={{padding:"9px 10px",textAlign:"left",color:t2,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em"}}>{h}</th>)}</tr></thead>
-            <tbody>
-              {withDup.slice(0,20).map((r,i)=>(
-                <tr key={i} style={{opacity:r.isDup?.6:1,background:r.isDup?"#78350f11":"transparent"}}>
-                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t2,whiteSpace:"nowrap"}}>{r.date}</td>
-                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t1,maxWidth:"200px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.merch}</td>
-                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.amt>=0?"#10b981":"#f87171",fontWeight:"600",whiteSpace:"nowrap"}}>{r.amt>=0?"+":""}{fmt(Math.abs(r.amt||0))}</td>
-                  <td style={{padding:"5px 10px",borderTop:`1px solid ${bdr}22`}}>
-                    <select style={{...S.sel,padding:"3px 6px",fontSize:"11px"}} value={r.cat} onChange={e=>{const v=e.target.value;setPreview(p=>p.map((x,j)=>j===i?{...x,cat:v}:x))}}>
-                      {Object.keys(getAllCats(customCats)).map(c=><option key={c}>{c}</option>)}
-                    </select>
-                  </td>
-                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:"#f59e0b",textAlign:"center"}}>{r.isDup?"⚠️":""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {withDup.length>20&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"10px"}}>+ {withDup.length-20} more not shown</div>}
+        <div style={{borderRadius:"8px",border:`1px solid ${bdr}`,overflow:"hidden"}}>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:"12px"}}>
+              <thead><tr style={{background:"#0d1117"}}>{["Date","Merchant",...(isMultiAcct?["CSV Account"]:[]),"Amount","Category"].map(h=><th key={h} style={{padding:"9px 10px",textAlign:"left",color:t2,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+              <tbody>
+                {withDup.slice(0,25).map((r,i)=>(
+                  <tr key={i} style={{background:r.isDup?"#78350f18":"transparent"}}>
+                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t2,whiteSpace:"nowrap"}}>{r.date}</td>
+                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.isDup?"#6b7280":t1,maxWidth:"190px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.isDup?"⚠️ ":""}{r.merch}</td>
+                    {isMultiAcct&&<td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:"#60a5fa",fontSize:"11px",maxWidth:"130px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.csvAcct}</td>}
+                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.amt>=0?"#10b981":"#f87171",fontWeight:"700",whiteSpace:"nowrap"}}>{r.amt>=0?"+":""}{fmt(Math.abs(r.amt||0))}</td>
+                    <td style={{padding:"5px 10px",borderTop:`1px solid ${bdr}22`}}>
+                      <select style={{...S.sel,padding:"3px 6px",fontSize:"11px"}} value={r.cat} onChange={e=>{const v=e.target.value;setPreview(p=>p.map((x,j)=>j===i?{...x,cat:v}:x))}}>
+                        {Object.keys(getAllCats(customCats)).map(c=><option key={c}>{c}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {withDup.length>25&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"10px",background:"#0d1117"}}>+ {withDup.length-25} more rows not shown in preview</div>}
         </div>
         {/* Actions */}
         <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-          {dupCount>0&&<button onClick={()=>doImport(true)} disabled={importing} style={{...S.btn("green"),flex:1}}>{importing?"Importing…":`Import ${withDup.length-dupCount} (skip ${dupCount} dup${dupCount!==1?"s":""})`}</button>}
-          <button onClick={()=>doImport(false)} disabled={importing} style={{...S.btn(dupCount>0?"gray":"green"),flex:1}}>{importing?"Importing…":`Import All ${withDup.length}`}</button>
-          <button onClick={onClose} style={S.btn("gray")}>Cancel</button>
+          {dupCount>0&&<button onClick={()=>doImport(true)} disabled={importing} style={{...S.btn("green"),flex:1,minWidth:"190px",fontSize:"14px",padding:"11px 16px"}}>{importing?"Saving…":`✓ Import ${withDup.length-dupCount} (skip ${dupCount} dup${dupCount!==1?"s":""})`}</button>}
+          <button onClick={()=>doImport(false)} disabled={importing} style={{...S.btn(dupCount>0?"gray":"green"),flex:1,minWidth:"160px",fontSize:"14px",padding:"11px 16px"}}>{importing?"Saving…":`Import All ${withDup.length}`}</button>
+          <button onClick={onClose} style={{...S.btn("red"),fontSize:"14px",padding:"11px 16px"}}>Cancel</button>
         </div>
       </div>
     </div>
@@ -283,6 +317,7 @@ function MainApp(){
   const[ckd,setCkd]=useState({}),[rentRoll,setRentRoll]=useState([])
   const[customCats,setCustomCats]=useState(getCustomCats())
   const[members,setMembers]=useState(getMembers())
+  const[importData,setImportData]=useState(null)
   const[notif,setNotif]=useState(null)
   const toast=(msg,type="ok")=>{setNotif({msg,type});setTimeout(()=>setNotif(null),4500)}
   const handleAddCat=u=>{saveCustomCats(u);setCustomCats(u)}
@@ -333,6 +368,7 @@ function MainApp(){
   // CRUD
   const addTxn=async row=>{const{data,e}=await sb.from("transactions").insert({...row,created_at:new Date().toISOString()}).select().single();if(!e&&data)setTxns(p=>[data,...p]);else if(e)toast("Save failed: "+e.message,"err");return data}
   const delTxn=async id=>{if(!window.confirm("Delete this transaction?"))return;await sb.from("transactions").delete().eq("id",id);setTxns(p=>p.filter(x=>x.id!==id))}
+  const bulkDelTxns=async ids=>{for(const id of ids){await sb.from("transactions").delete().eq("id",id)};setTxns(p=>p.filter(x=>!ids.has(x.id)))}
   const updTxn=async(id,row)=>{await sb.from("transactions").update(row).eq("id",id);setTxns(p=>p.map(x=>x.id===id?{...x,...row}:x))}
   const addAcct=async row=>{const{data,e}=await sb.from("accounts").insert(row).select().single();if(!e&&data)setAccts(p=>[...p,data]);else if(e)toast("Save failed","err")}
   const delAcct=async id=>{if(!window.confirm("Delete this account?"))return;await sb.from("accounts").delete().eq("id",id);setAccts(p=>p.filter(x=>x.id!==id))}
@@ -358,11 +394,17 @@ function MainApp(){
     toast("🔗 Receipt linked to transaction")
   }
   const handleSetMembers=m=>{saveMembers(m);setMembers(m)}
+  const handleImport=async rows=>{
+    let count=0
+    for(const row of rows){try{await addTxn(row);count++}catch{}}
+    toast(`✓ Imported ${count} transaction${count!==1?"s":""}`)
+    setImportData(null)
+  }
 
   const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,
-    addTxn,delTxn,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
+    addTxn,delTxn,bulkDelTxns,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
     addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,addRent,updRent,delRent,linkReceiptToTxn,
-    toast,handleAddCat,handleSetMembers}
+    toast,handleAddCat,handleSetMembers,setImportData}
 
   if(loading)return(
     <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
@@ -375,6 +417,7 @@ function MainApp(){
   return(
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',system-ui,sans-serif",background:bg,color:t1,overflow:"hidden"}}>
       {notif&&<div style={{position:"fixed",top:16,right:16,zIndex:1000,background:notif.type==="err"?"#7f1d1d":"#14532d",color:notif.type==="err"?"#fca5a5":"#86efac",border:`1px solid ${notif.type==="err"?"#ef4444":"#22c55e"}`,borderRadius:"10px",padding:"10px 16px",fontSize:"13px",fontWeight:"500",maxWidth:"320px",boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>{notif.msg}</div>}
+      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat}/>}
       {open&&<Sidebar nav={nav} setNav={setNav} nw={nw} accts={accts}/>}
       <div style={{flex:1,overflow:"auto",display:"flex",flexDirection:"column",minWidth:0}}>
         <div style={{background:sdbg,borderBottom:`1px solid ${bdr}`,padding:"10px 16px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
@@ -623,28 +666,28 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
   )
 }
 
-function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,handleAddCat,members}){
+function Transactions({txns,addTxn,delTxn,bulkDelTxns,updTxn,accts,toast,CATS,customCats,handleAddCat,members,setImportData}){
   const[q,setQ]=useState(""),[cf,setCf]=useState("All"),[mf,setMf]=useState("All")
-  const[n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})
+  const[dateFrom,setDateFrom]=useState(""),[dateTo,setDateTo]=useState("")
+  const[reviewOnly,setReviewOnly]=useState(false)
+  const[sortCol,setSortCol]=useState("date"),[sortDir,setSortDir]=useState("desc")
+  const[selected,setSelected]=useState(new Set())
   const[expanded,setExpanded]=useState(null)
   const[localNote,setLocalNote]=useState({})
-  const[importData,setImportData]=useState(null)
+  const[bulkCat,setBulkCat]=useState(""),[bulkMember,setBulkMember]=useState("")
   const[pdfBusy,setPdfBusy]=useState(false)
+  const[showAdd,setShowAdd]=useState(false)
+  const[n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})
   const csvRef=useRef(),pdfRef=useRef()
 
-  const add=async()=>{if(!n.merch||n.amt==="")return;await addTxn({...n,amt:parseFloat(n.amt),aid:n.aid?parseInt(n.aid):null});setN({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})}
+  const add=async()=>{if(!n.merch||n.amt==="")return;await addTxn({...n,amt:parseFloat(n.amt),aid:n.aid?parseInt(n.aid):null});setN({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""});setShowAdd(false)}
 
   const handleCSV=async e=>{
     const file=e.target.files[0];if(!file)return
-    try{
-      const text=await file.text()
-      const rows=parseCSVRows(text)
-      if(rows.length===0){toast("Could not read CSV — check format","err");e.target.value="";return}
-      setImportData({rows,detectedAcctId:"",last4:null})
-    }catch(err){toast("CSV error: "+err.message,"err")}
+    try{const text=await file.text();const rows=parseCSVRows(text);if(rows.length===0){toast("Could not read CSV — check column headers","err");e.target.value="";return};setImportData({rows,detectedAcctId:"",last4:null})}
+    catch(err){toast("CSV error: "+err.message,"err")}
     e.target.value=""
   }
-
   const handlePDF=async e=>{
     const file=e.target.files[0];if(!file)return
     setPdfBusy(true)
@@ -652,113 +695,243 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
       const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(",")[1]);r.readAsDataURL(file)})
       const{rows,last4}=await parsePDFWithGemini(b64)
       if(!Array.isArray(rows)||rows.length===0)throw new Error("No transactions found — try CSV instead")
-      const parsed=rows.map(r=>({date:normalizeDate(r.date||""),merch:r.merch||r.description||"",amt:parseFloat(r.amt)||0,cat:r.cat||autocat(r.merch||r.description||""),member:"",note:""})).filter(r=>r.merch&&r.merch.length>1)
-      // Try to auto-match account from last4
+      const parsed=rows.map(r=>({date:normalizeDate(r.date||""),merch:r.merch||r.description||"",amt:parseFloat(r.amt)||0,cat:r.cat||autocat(r.merch||r.description||""),member:"",note:"",csvAcct:""})).filter(r=>r.merch&&r.merch.length>1)
       let detectedAcctId=""
-      if(last4){const match=accts.find(a=>a.name?.includes(last4)||a.last4===last4);if(match)detectedAcctId=String(match.id)}
+      if(last4){const match=accts.find(a=>a.name?.includes(last4));if(match)detectedAcctId=String(match.id)}
       setImportData({rows:parsed,detectedAcctId,last4})
     }catch(err){toast("PDF: "+err.message,"err")}
     setPdfBusy(false);e.target.value=""
   }
 
-  const handleImport=async rows=>{
-    let count=0
-    for(const row of rows){try{await addTxn(row);count++}catch{}}
-    toast(`✓ Imported ${count} transaction${count!==1?"s":""}`)
-    setImportData(null)
-  }
+  // Sorting
+  const toggleSort=col=>{if(sortCol===col){setSortDir(d=>d==="asc"?"desc":"asc")}else{setSortCol(col);setSortDir(col==="amt"?"asc":"desc")}}
+  const SortArrow=({col})=>sortCol===col?<span style={{marginLeft:"3px",fontSize:"10px",color:acc}}>{sortDir==="asc"?"▲":"▼"}</span>:<span style={{marginLeft:"3px",fontSize:"10px",color:"#4b5563"}}>⇅</span>
 
   const acctMap={}; accts.forEach(a=>acctMap[a.id]=a)
+
+  // Filter
   const fil=txns.filter(t=>
     (q===""||t.merch?.toLowerCase().includes(q.toLowerCase())||t.cat?.toLowerCase().includes(q.toLowerCase())||t.note?.toLowerCase().includes(q.toLowerCase()))&&
     (cf==="All"||t.cat===cf)&&
-    (mf==="All"||t.member===mf||(mf==="Unassigned"&&!t.member))
-  ).sort((a,b)=>(b.date||"").localeCompare(a.date||""))
+    (mf==="All"||t.member===mf||(mf==="Unassigned"&&!t.member))&&
+    (!dateFrom||t.date>=dateFrom)&&
+    (!dateTo||t.date<=dateTo)&&
+    (!reviewOnly||(t.cat==="Other"&&!t.note))
+  ).sort((a,b)=>{
+    let v=0
+    if(sortCol==="date")v=(a.date||"").localeCompare(b.date||"")
+    else if(sortCol==="merch")v=(a.merch||"").toLowerCase().localeCompare((b.merch||"").toLowerCase())
+    else if(sortCol==="amt")v=(a.amt||0)-(b.amt||0)
+    else if(sortCol==="cat")v=(a.cat||"").localeCompare(b.cat||"")
+    return sortDir==="asc"?v:-v
+  })
 
+  const PAGE=200
+  const visible=fil.slice(0,PAGE)
+
+  // Running balance — only when filtered to a single account
+  const singleAcctId=cf==="All"&&mf==="All"&&!dateFrom&&!dateTo&&!q?null:null // only show when acct filter active
+  const acctFilter=fil.length>0&&fil.every(t=>t.aid&&t.aid===fil[0].aid)?fil[0].aid:null
+  const showRunning=!!acctFilter
+  let running=0
+  const withRunning=showRunning?[...visible].reverse().map(t=>{running+=t.amt||0;return{...t,running}}).reverse():visible
+
+  // Totals
   const incT=fil.filter(t=>t.amt>0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0)
   const expT=Math.abs(fil.filter(t=>t.amt<0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0))
+  const reviewCount=txns.filter(t=>t.cat==="Other"&&!t.note).length
+
+  // Selection helpers
+  const allSel=visible.length>0&&visible.every(t=>selected.has(t.id))
+  const toggleAll=()=>{if(allSel){setSelected(new Set())}else{setSelected(new Set(visible.map(t=>t.id)))}}
+  const toggleOne=(id,e)=>{e.stopPropagation();setSelected(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s})}
+
+  // Bulk actions
+  const bulkDelete=async()=>{
+    if(!selected.size)return
+    if(!window.confirm(`Delete ${selected.size} transaction${selected.size!==1?"s":""}? This cannot be undone.`))return
+    const ids=new Set(selected)
+    await bulkDelTxns(ids)
+    setSelected(new Set())
+    toast(`✓ Deleted ${ids.size} transaction${ids.size!==1?"s":""}`)
+  }
+
+  const bulkReCat=async()=>{if(!bulkCat||!selected.size)return;for(const id of selected)await updTxn(id,{cat:bulkCat});toast(`✓ Re-categorized ${selected.size} transactions`)}
+  const bulkAssignMember=async()=>{if(!bulkMember||!selected.size)return;for(const id of selected)await updTxn(id,{member:bulkMember});toast(`✓ Assigned ${selected.size} transactions to ${bulkMember}`)}
+
+  // Export filtered view
+  const exportCSV=()=>{
+    const rows=[["Date","Merchant","Amount","Category","Member","Account","Note"],
+      ...fil.map(t=>[t.date,`"${(t.merch||"").replace(/"/g,'""')}"`,t.amt,t.cat,t.member||"",acctMap[t.aid]?.name||"",`"${(t.note||"").replace(/"/g,'""')}"`])]
+    const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download=`transactions_export_${new Date().toISOString().slice(0,10)}.csv`;a.click()
+    toast(`✓ Exported ${fil.length} transactions`)
+  }
+
+  const thStyle={padding:"9px 10px",textAlign:"left",color:t2,borderBottom:`1px solid ${bdr}`,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em",cursor:"pointer",whiteSpace:"nowrap",userSelect:"none",background:"#0d1117"}
 
   return(
     <div style={{padding:"22px"}}>
-      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat}/>}
-      <div style={{marginBottom:"14px"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-          <div><h1 style={S.h1}>Transactions</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}</p></div>
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px",flexWrap:"wrap",gap:"8px"}}>
+        <div>
+          <h1 style={S.h1}>Transactions</h1>
+          <p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>
+            {fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}
+            {reviewCount>0&&<span onClick={()=>setReviewOnly(r=>!r)} style={{marginLeft:"10px",color:"#f59e0b",cursor:"pointer",fontWeight:"600"}}>⚠️ {reviewCount} need review</span>}
+          </p>
         </div>
-        <div style={{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
-          <input style={{...S.inp,flex:"1",minWidth:"140px"}} placeholder="Search…" value={q} onChange={e=>setQ(e.target.value)}/>
-          <select style={S.sel} value={cf} onChange={e=>setCf(e.target.value)}><option>All</option>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
-          <select style={S.sel} value={mf} onChange={e=>setMf(e.target.value)}><option value="All">All Members</option><option value="Unassigned">Unassigned</option>{members.map(m=><option key={m}>{m}</option>)}</select>
+        <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+          <button onClick={()=>setShowAdd(v=>!v)} style={{...S.btn(showAdd?"gray":"purple"),padding:"7px 14px"}}>+ Add</button>
           <input ref={csvRef} type="file" accept=".csv" style={{display:"none"}} onChange={handleCSV}/>
           <input ref={pdfRef} type="file" accept=".pdf" style={{display:"none"}} onChange={handlePDF}/>
-          <button onClick={()=>csvRef.current?.click()} style={{...S.btn("green"),whiteSpace:"nowrap"}}>📂 CSV</button>
-          <button onClick={()=>pdfRef.current?.click()} disabled={pdfBusy} style={{...S.btn("purple"),whiteSpace:"nowrap"}}>{pdfBusy?"⏳":"📄 PDF"}</button>
+          <button onClick={()=>csvRef.current?.click()} style={{...S.btn("green"),padding:"7px 14px"}}>📂 CSV</button>
+          <button onClick={()=>pdfRef.current?.click()} disabled={pdfBusy} style={{...S.btn("blue"),padding:"7px 14px"}}>{pdfBusy?"⏳":"📄 PDF"}</button>
+          <button onClick={exportCSV} style={{...S.btn("gray"),padding:"7px 14px"}} title="Export filtered view">⬇️ Export</button>
         </div>
       </div>
-      <div style={{...S.card,marginBottom:"14px"}}>
-        <div style={{fontSize:"13px",fontWeight:"600",color:t1,marginBottom:"12px"}}>Add Transaction</div>
+
+      {/* Filters */}
+      <div style={{...S.card,marginBottom:"12px",padding:"14px 16px"}}>
+        <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
+          <input style={{...S.inp,flex:"1",minWidth:"130px"}} placeholder="🔍 Search merchant, category, note…" value={q} onChange={e=>setQ(e.target.value)}/>
+          <select style={S.sel} value={cf} onChange={e=>setCf(e.target.value)}><option value="All">All Categories</option>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
+          <select style={S.sel} value={mf} onChange={e=>setMf(e.target.value)}><option value="All">All Members</option><option value="Unassigned">Unassigned</option>{members.map(m=><option key={m}>{m}</option>)}</select>
+          <input style={{...S.inp,width:"130px"}} type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} title="From date"/>
+          <input style={{...S.inp,width:"130px"}} type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} title="To date"/>
+          <label style={{display:"flex",alignItems:"center",gap:"6px",cursor:"pointer",color:reviewOnly?"#f59e0b":t2,fontSize:"12px",whiteSpace:"nowrap"}}>
+            <input type="checkbox" checked={reviewOnly} onChange={e=>setReviewOnly(e.target.checked)} style={{accentColor:"#f59e0b"}}/>
+            Needs Review
+          </label>
+          {(q||cf!=="All"||mf!=="All"||dateFrom||dateTo||reviewOnly)&&<button onClick={()=>{setQ("");setCf("All");setMf("All");setDateFrom("");setDateTo("");setReviewOnly(false)}} style={{...S.btn("gray"),padding:"6px 10px",fontSize:"12px"}}>✕ Clear</button>}
+        </div>
+      </div>
+
+      {/* Add form */}
+      {showAdd&&<div style={{...S.card,marginBottom:"12px"}}>
+        <div style={{fontSize:"13px",fontWeight:"600",color:t1,marginBottom:"12px"}}>New Transaction</div>
         <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"flex-end"}}>
           <input style={{...S.inp,width:"120px"}} type="date" value={n.date} onChange={e=>setN(p=>({...p,date:e.target.value}))}/>
           <input style={{...S.inp,flex:"1",minWidth:"130px"}} placeholder="Merchant" value={n.merch} onChange={e=>setN(p=>({...p,merch:e.target.value}))}/>
-          <input style={{...S.inp,width:"120px"}} type="number" placeholder="Amt (neg=expense)" value={n.amt} onChange={e=>setN(p=>({...p,amt:e.target.value}))}/>
+          <input style={{...S.inp,width:"130px"}} type="number" placeholder="Amount (neg=expense)" value={n.amt} onChange={e=>setN(p=>({...p,amt:e.target.value}))}/>
           <CatSelect value={n.cat} onChange={v=>setN(p=>({...p,cat:v}))} customCats={customCats} onAddCat={handleAddCat}/>
-          {accts.length>0&&(
-            <select style={S.sel} value={n.aid} onChange={e=>setN(p=>({...p,aid:e.target.value}))}><option value="">Account</option>{accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>
-          )}
+          {accts.length>0&&<select style={S.sel} value={n.aid} onChange={e=>setN(p=>({...p,aid:e.target.value}))}><option value="">Account</option>{accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>}
           <select style={S.sel} value={n.member} onChange={e=>setN(p=>({...p,member:e.target.value}))}><option value="">Member</option>{members.map(m=><option key={m}>{m}</option>)}</select>
-          <button style={S.btn("green")} onClick={add}>Add</button>
+          <button style={S.btn("green")} onClick={add}>Save</button>
+          <button style={S.btn("gray")} onClick={()=>setShowAdd(false)}>Cancel</button>
         </div>
-      </div>
-      <div style={S.card}>
-        {fil.length===0?<p style={{color:t2,textAlign:"center",padding:"30px"}}>No transactions yet.</p>:
-          fil.slice(0,150).map((t,i)=>{
-            const acct=acctMap[t.aid]
-            const isExp=expanded===t.id
-            return(
-              <div key={t.id} style={{borderBottom:i<Math.min(fil.length,150)-1?`1px solid ${bdr}22`:""}}>
-                <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 6px",cursor:"pointer"}} onClick={()=>setExpanded(isExp?null:t.id)}>
-                  <div style={{width:"36px",height:"36px",borderRadius:"10px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:"13px",fontWeight:"500",color:t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.merch}</div>
-                    <div style={{fontSize:"11px",color:t2,display:"flex",gap:"8px",flexWrap:"wrap"}}>
-                      <span>{t.date}</span>
-                      {acct&&<span style={{color:acc}}>· {AT[acct.type]?.i} {acct.name}</span>}
-                      {t.member&&<span style={{color:"#f59e0b"}}>· {t.member}</span>}
-                      {t.note&&<span style={{color:"#4b5563"}}>· 📝</span>}
-                      {t.receipt_id&&<span style={{color:"#10b981"}}>· 🔗</span>}
-                    </div>
-                  </div>
-                  <CatSelect value={t.cat||"Other"} onChange={v=>{updTxn(t.id,{cat:v});}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"11px",padding:"4px 7px"}}/>
-                  <div style={{fontWeight:"700",fontSize:"14px",color:t.amt>=0?"#10b981":t1,minWidth:"72px",textAlign:"right"}}>{t.amt>=0?"+":""}{fmt(Math.abs(t.amt||0))}</div>
-                  <button onClick={e=>{e.stopPropagation();delTxn(t.id)}} style={{...S.btn("gray"),padding:"4px 8px",fontSize:"12px"}}>✕</button>
-                </div>
-                {isExp&&(
-                  <div style={{background:"#0d1117",padding:"12px 16px",margin:"0 6px 6px",borderRadius:"8px",display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"flex-end"}}>
-                    <div style={{flex:1,minWidth:"160px"}}>
-                      <label style={S.lbl}>Notes</label>
-                      <input style={{...S.inp,fontSize:"12px"}} placeholder="Add a note…" value={localNote[t.id]??t.note??""} onChange={e=>setLocalNote(p=>({...p,[t.id]:e.target.value}))} onBlur={e=>updTxn(t.id,{note:e.target.value})}/>
-                    </div>
-                    <div>
-                      <label style={S.lbl}>Member</label>
-                      <select style={{...S.sel,fontSize:"12px"}} value={t.member||""} onChange={e=>updTxn(t.id,{member:e.target.value})}>
-                        <option value="">— None —</option>
-                        {members.map(m=><option key={m}>{m}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label style={S.lbl}>Account</label>
-                      <select style={{...S.sel,fontSize:"12px"}} value={t.aid||""} onChange={e=>updTxn(t.id,{aid:e.target.value?parseInt(e.target.value):null})}>
-                        <option value="">— None —</option>
-                        {accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          })
+      </div>}
+
+      {/* Bulk action bar */}
+      {selected.size>0&&(
+        <div style={{...S.card,marginBottom:"12px",padding:"12px 16px",background:"#1e1b4b",border:"1px solid #6366f155",display:"flex",gap:"10px",alignItems:"center",flexWrap:"wrap"}}>
+          <span style={{color:acc,fontWeight:"700",fontSize:"13px"}}>{selected.size} selected</span>
+          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+            <CatSelect value={bulkCat||"Other"} onChange={setBulkCat} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"12px",padding:"4px 8px"}}/>
+            <button onClick={bulkReCat} disabled={!bulkCat} style={{...S.btn("purple"),padding:"5px 12px",fontSize:"12px"}}>Re-categorize</button>
+          </div>
+          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+            <select style={{...S.sel,fontSize:"12px",padding:"5px 8px"}} value={bulkMember} onChange={e=>setBulkMember(e.target.value)}><option value="">— Member —</option>{members.map(m=><option key={m}>{m}</option>)}</select>
+            <button onClick={bulkAssignMember} disabled={!bulkMember} style={{...S.btn("orange"),padding:"5px 12px",fontSize:"12px"}}>Assign</button>
+          </div>
+          <div style={{flex:1}}/>
+          <button onClick={bulkDelete} style={{...S.btn("red"),padding:"5px 14px",fontSize:"12px"}}>🗑 Delete {selected.size}</button>
+          <button onClick={()=>setSelected(new Set())} style={{...S.btn("gray"),padding:"5px 10px",fontSize:"12px"}}>✕ Deselect</button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div style={{...S.card,padding:0,overflow:"hidden"}}>
+        {fil.length===0
+          ?<p style={{color:t2,textAlign:"center",padding:"40px"}}>No transactions match your filters.</p>
+          :<div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
+              <thead>
+                <tr>
+                  <th style={{...thStyle,width:"36px",cursor:"default"}} onClick={e=>e.stopPropagation()}>
+                    <input type="checkbox" checked={allSel} onChange={toggleAll} style={{accentColor:acc,width:"14px",height:"14px",cursor:"pointer"}}/>
+                  </th>
+                  <th style={thStyle} onClick={()=>toggleSort("date")}>Date<SortArrow col="date"/></th>
+                  <th style={thStyle} onClick={()=>toggleSort("merch")}>Merchant<SortArrow col="merch"/></th>
+                  <th style={thStyle} onClick={()=>toggleSort("cat")}>Category<SortArrow col="cat"/></th>
+                  <th style={{...thStyle,textAlign:"right"}} onClick={()=>toggleSort("amt")}>Amount<SortArrow col="amt"/></th>
+                  {showRunning&&<th style={{...thStyle,textAlign:"right",color:"#60a5fa"}}>Balance</th>}
+                  <th style={{...thStyle,cursor:"default"}}>Details</th>
+                  <th style={{...thStyle,cursor:"default",width:"32px"}}/>
+                </tr>
+              </thead>
+              <tbody>
+                {withRunning.map((t,i)=>{
+                  const acct=acctMap[t.aid]
+                  const isSel=selected.has(t.id)
+                  const isExp=expanded===t.id
+                  const needsReview=t.cat==="Other"&&!t.note
+                  return(
+                    <>
+                      <tr key={t.id} onClick={()=>setExpanded(isExp?null:t.id)} style={{background:isSel?"#1e1b4b":isExp?"#0d1117":"transparent",cursor:"pointer",borderTop:i>0?`1px solid ${bdr}22`:""}}>
+                        <td style={{padding:"10px 10px 10px 14px"}} onClick={e=>toggleOne(t.id,e)}>
+                          <input type="checkbox" checked={isSel} onChange={()=>{}} style={{accentColor:acc,width:"14px",height:"14px",cursor:"pointer",pointerEvents:"none"}}/>
+                        </td>
+                        <td style={{padding:"10px",color:t2,whiteSpace:"nowrap"}}>{t.date}</td>
+                        <td style={{padding:"10px",maxWidth:"220px"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                            <div style={{width:"28px",height:"28px",borderRadius:"8px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontSize:"13px",fontWeight:"500",color:needsReview?"#f59e0b":t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                {needsReview&&"⚠️ "}{t.merch}
+                              </div>
+                              <div style={{fontSize:"11px",color:t2,display:"flex",gap:"6px"}}>
+                                {acct&&<span style={{color:"#818cf8"}}>{AT[acct.type]?.i} {acct.name}</span>}
+                                {t.member&&<span style={{color:"#f59e0b"}}>· {t.member}</span>}
+                                {t.note&&<span title={t.note}>📝</span>}
+                                {t.receipt_id&&<span style={{color:"#10b981"}}>🔗</span>}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{padding:"10px"}} onClick={e=>e.stopPropagation()}>
+                          <CatSelect value={t.cat||"Other"} onChange={v=>updTxn(t.id,{cat:v})} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"11px",padding:"3px 6px"}}/>
+                        </td>
+                        <td style={{padding:"10px",fontWeight:"700",fontSize:"14px",color:t.amt>=0?"#10b981":"#f87171",textAlign:"right",whiteSpace:"nowrap"}}>{t.amt>=0?"+":""}{fmt(Math.abs(t.amt||0))}</td>
+                        {showRunning&&<td style={{padding:"10px",fontWeight:"600",fontSize:"13px",color:t.running>=0?"#10b981":"#f87171",textAlign:"right",whiteSpace:"nowrap"}}>{fmt(t.running||0)}</td>}
+                        <td style={{padding:"10px",fontSize:"11px",color:t2,maxWidth:"140px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isExp?"▲ collapse":"▼ expand"}</td>
+                        <td style={{padding:"10px"}} onClick={e=>e.stopPropagation()}>
+                          <button onClick={()=>delTxn(t.id)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"16px",lineHeight:1,padding:"2px 6px",borderRadius:"6px"}} onMouseOver={e=>e.target.style.color="#ef4444"} onMouseOut={e=>e.target.style.color="#4b5563"}>✕</button>
+                        </td>
+                      </tr>
+                      {isExp&&(
+                        <tr key={t.id+"_exp"} style={{background:"#0a0f1a"}}>
+                          <td colSpan={showRunning?8:7} style={{padding:"12px 16px 14px 54px"}}>
+                            <div style={{display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"flex-end"}}>
+                              <div style={{flex:1,minWidth:"180px"}}>
+                                <label style={S.lbl}>Note</label>
+                                <input style={{...S.inp,fontSize:"12px"}} placeholder="Add a note…" value={localNote[t.id]??t.note??""} onChange={e=>setLocalNote(p=>({...p,[t.id]:e.target.value}))} onBlur={e=>updTxn(t.id,{note:e.target.value})}/>
+                              </div>
+                              <div>
+                                <label style={S.lbl}>Member</label>
+                                <select style={{...S.sel,fontSize:"12px"}} value={t.member||""} onChange={e=>updTxn(t.id,{member:e.target.value})}>
+                                  <option value="">— None —</option>
+                                  {members.map(m=><option key={m}>{m}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label style={S.lbl}>Account</label>
+                                <select style={{...S.sel,fontSize:"12px"}} value={t.aid||""} onChange={e=>updTxn(t.id,{aid:e.target.value?parseInt(e.target.value):null})}>
+                                  <option value="">— None —</option>
+                                  {accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  )
+                })}
+              </tbody>
+            </table>
+            {fil.length>PAGE&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"14px",borderTop:`1px solid ${bdr}22`}}>Showing {PAGE} of {fil.length} — use filters to narrow results</div>}
+          </div>
         }
-        {fil.length>150&&<p style={{textAlign:"center",color:t2,fontSize:"12px",padding:"12px"}}>Showing 150 of {fil.length} — use search to filter</p>}
       </div>
     </div>
   )
