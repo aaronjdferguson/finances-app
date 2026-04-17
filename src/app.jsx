@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { createClient } from "@supabase/supabase-js"
 import { BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
-import Papa from "papaparse"
 
 const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
 
@@ -65,253 +64,57 @@ const S={
 const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Rent Roll",i:"🏢"},{l:"Tax Prep",i:"💼"}]
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
+const parseCSVLine = line => {
+  const cols=[]; let cur=""; let inQ=false
+  for(let i=0;i<line.length;i++){
+    if(line[i]==='"'){inQ=!inQ}
+    else if(line[i]===','&&!inQ){cols.push(cur.trim());cur=""}
+    else cur+=line[i]
+  }
+  cols.push(cur.trim())
+  return cols
+}
 const normalizeDate = raw => {
   if(!raw)return""
-  const s=raw.trim()
-  if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s
-  const m1=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  const m1=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
   if(m1)return`${m1[3]}-${m1[1].padStart(2,"0")}-${m1[2].padStart(2,"0")}`
-  const m2=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/)
+  const m2=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/)
   if(m2)return`20${m2[3]}-${m2[1].padStart(2,"0")}-${m2[2].padStart(2,"0")}`
-  return s.slice(0,10)
+  return raw.slice(0,10)
 }
 const parseCSVRows = (text) => {
   try {
-    const result = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false, transformHeader:h=>h.toLowerCase().replace(/[^a-z0-9 ]/g,"").trim() })
-    if(!result.data?.length) return []
-    const hdrs = result.meta.fields || []
-    const find=(...keys)=>hdrs.find(h=>keys.some(k=>h===k||h.includes(k)))||null
-    const dk=find("date","trans date","post date")
-    const dsk=find("description","desc","name","original description","narr")
-    const ak=find("amount","amt")
-    const tk=find("type")
-    const drk=find("debit","withdrawal")
-    const crk=find("credit","deposit")
-    const acctk=find("account")
-    return result.data.map(row=>{
-      const desc=(dsk?row[dsk]:"")||""
+    const lines=text.trim().split(/\r?\n/).filter(l=>l.trim())
+    if(lines.length<2)return[]
+    const hdrs=parseCSVLine(lines[0]).map(h=>h.toLowerCase().replace(/[^a-z0-9 ]/g,"").trim())
+    const find=(...keys)=>hdrs.findIndex(h=>keys.some(k=>h===k||h.includes(k)))
+    const di=find("date","trans date","post date"), dsi=find("description","desc","name","memo","original description","narr"), ai=find("amount","amt"), ti=find("type"), dri=find("debit","withdrawal"), cri=find("credit","deposit")
+    return lines.slice(1).map(line=>{
+      if(!line.trim())return null
+      const vals=parseCSVLine(line)
+      const row={}; hdrs.forEach((h,j)=>row[h]=vals[j]||"")
+      const desc=(di>=0?vals[dsi]:"")||Object.values(row)[1]||""
       if(!desc||desc.length<2)return null
       let amt=0
-      if(tk){
-        const type=(row[tk]||"").trim().toLowerCase()
-        const raw=parseFloat((row[ak]||"0").replace(/[^0-9.-]/g,""))||0
-        if(type==="debit") amt=-Math.abs(raw)
-        else if(type==="credit") amt=Math.abs(raw)
-        else amt=raw
-      } else if(drk&&crk){
-        const dv=parseFloat((row[drk]||"0").replace(/[^0-9.-]/g,""))||0
-        const cv=parseFloat((row[crk]||"0").replace(/[^0-9.-]/g,""))||0
+      if(ti>=0){
+        // BECU-style: Type column = "Debit" / "Credit"
+        const type=(vals[ti]||"").trim().toLowerCase()
+        const raw=parseFloat((vals[ai]||"0").replace(/[^0-9.-]/g,""))||0
+        amt=type==="debit"?-Math.abs(raw):type==="credit"?Math.abs(raw):raw
+      } else if(dri>=0&&cri>=0){
+        // Two-column: Debit + Credit
+        const dv=parseFloat((vals[dri]||"0").replace(/[^0-9.-]/g,""))||0
+        const cv=parseFloat((vals[cri]||"0").replace(/[^0-9.-]/g,""))||0
         amt=cv>0?cv:-dv
-      } else if(ak){
-        amt=parseFloat((row[ak]||"0").replace(/[^0-9.-]/g,""))||0
+      } else if(ai>=0){
+        amt=parseFloat((vals[ai]||"0").replace(/[^0-9.-]/g,""))||0
       }
-      const csvAcct=acctk?(row[acctk]||""):""
-      return{date:normalizeDate(dk?row[dk]:""),merch:desc,amt,cat:autocat(desc),member:"",note:"",csvAcct}
+      return{date:normalizeDate(di>=0?vals[di]:""),merch:desc.replace(/^"|"$/g,""),amt,cat:autocat(desc),member:"",note:""}
     }).filter(Boolean)
-  } catch(err){ console.error("CSV parse error:",err); return [] }
+  } catch { return [] }
 }
 
-// ─── Gemini — browser-direct with Netlify fallback ────────────────────────────
-const GEMINI_MODEL = "gemini-2.5-flash-lite" // Update here when model is deprecated
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
-
-// Robust JSON extractor: tries JSON.parse, then bracket-balancing scan
-const extractJSON = text => {
-  const clean = text.replace(/```json|```/g,"").trim()
-  // Try direct parse first
-  try { const r=JSON.parse(clean); return r } catch {}
-  // Bracket-balance scan — finds the outermost complete array or object
-  for(let start=0;start<clean.length;start++){
-    const opener=clean[start]
-    if(opener!=="["&&opener!=="{")continue
-    const closer=opener==="["?"]":"}"
-    let depth=0; let inStr=false; let escape=false
-    for(let i=start;i<clean.length;i++){
-      const ch=clean[i]
-      if(escape){escape=false;continue}
-      if(ch==="\\"&&inStr){escape=true;continue}
-      if(ch==='"')inStr=!inStr
-      if(!inStr){if(ch===opener)depth++;else if(ch===closer)depth--}
-      if(depth===0&&i>start){
-        try{return JSON.parse(clean.slice(start,i+1))}catch{}
-        break
-      }
-    }
-  }
-  throw new Error("No valid JSON found in response")
-}
-
-// Direct browser call to Gemini REST API
-const callGeminiDirect = async (body) => {
-  const key = import.meta.env.VITE_GEMINI_KEY
-  if(!key) throw new Error("VITE_GEMINI_KEY not set — check your .env file")
-  const controller = new AbortController()
-  const timer = setTimeout(()=>controller.abort(), 90000)
-  try {
-    const res = await fetch(`${GEMINI_URL}?key=${key}`, {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(body), signal:controller.signal
-    })
-    clearTimeout(timer)
-    if(res.status===429){
-      // Rate limited — wait 60s and retry once
-      await new Promise(r=>setTimeout(r,60000))
-      const retry = await fetch(`${GEMINI_URL}?key=${key}`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
-      if(!retry.ok){const e=await retry.json().catch(()=>({error:{message:`HTTP ${retry.status}`}}));throw new Error(e?.error?.message||`Gemini error ${retry.status}`)}
-      const d=await retry.json(); return d?.candidates?.[0]?.content?.parts?.[0]?.text||""
-    }
-    if(!res.ok){
-      let msg=`Gemini error ${res.status}`
-      try{const e=await res.json();msg=e?.error?.message||msg}catch{}
-      if(res.status===404) msg=`Model "${GEMINI_MODEL}" not found — app needs an update`
-      throw new Error(msg)
-    }
-    const d=await res.json()
-    const text=d?.candidates?.[0]?.content?.parts?.[0]?.text
-    const reason=d?.candidates?.[0]?.finishReason
-    if(!text){
-      if(reason==="MAX_TOKENS") throw new Error("Response truncated — try a shorter date range")
-      if(reason==="SAFETY") throw new Error("Content blocked by Gemini safety filter")
-      throw new Error("Empty response from Gemini (reason: "+(reason||"unknown")+")")
-    }
-    return text
-  } catch(err){
-    clearTimeout(timer)
-    if(err.name==="AbortError") throw new Error("Request timed out after 90s — check your connection")
-    throw err
-  }
-}
-
-// Call Gemini — tries browser-direct first, falls back to Netlify function
-const callGemini = async (body, netlifyPayload) => {
-  try {
-    return await callGeminiDirect(body)
-  } catch(directErr) {
-    console.warn("Direct Gemini call failed, trying Netlify fallback:", directErr.message)
-    // Netlify fallback — subject to 10s timeout but better than nothing
-    try {
-      const res = await fetch("/.netlify/functions/gemini", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(netlifyPayload)
-      })
-      if(!res.ok) throw new Error(`Netlify function error ${res.status}`)
-      const {text, error} = await res.json()
-      if(error) throw new Error(error)
-      return text
-    } catch(fallbackErr) {
-      // Surface the original direct error — it's more informative
-      throw new Error(directErr.message + " (fallback also failed: " + fallbackErr.message + ")")
-    }
-  }
-}
-
-// ─── PDF text extraction via pdf.js ──────────────────────────────────────────
-const extractPdfText = async (file) => {
-  if(file.size > 20 * 1024 * 1024) throw new Error("PDF too large (max 20 MB) — request a shorter date range from your bank")
-  // Dynamic import — only loads pdf.js when needed
-  let pdfjsLib
-  try {
-    pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs")
-  } catch {
-    // Fallback to main build if legacy not available
-    pdfjsLib = await import("pdfjs-dist")
-  }
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
-  const arrayBuffer = await file.arrayBuffer()
-  let pdf
-  try {
-    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-  } catch(err) {
-    if(err.name==="PasswordException") throw new Error("This PDF is password-protected. Remove the password in Adobe Reader or Preview and try again.")
-    if(err.name==="InvalidPDFException") throw new Error("File does not appear to be a valid PDF. Try saving it again from your bank's website.")
-    throw new Error("Could not open PDF: " + err.message)
-  }
-  const pageTexts = []
-  for(let i=1; i<=pdf.numPages; i++){
-    const page = await pdf.getPage(i)
-    const content = await page.getTextContent()
-    const pageText = content.items.map(item=>"str" in item ? item.str : "").join(" ")
-    pageTexts.push(pageText)
-  }
-  const fullText = pageTexts.map((t,i)=>`\n\n--- PAGE ${i+1} ---\n\n${t}`).join("")
-  const sparse = fullText.replace(/\s/g,"").length < 300
-  return { text: fullText, pageCount: pdf.numPages, sparse }
-}
-
-// ─── PDF import — extract text then call Gemini ───────────────────────────────
-const PDF_PROMPT = `You are a financial document parser. You are given extracted text from a bank or credit card statement. Return every real transaction as a JSON array.
-
-SIGN CONVENTION: negative amount = expense/debit/purchase (money leaving your account). Positive amount = income/credit/deposit/refund/payment received (money coming in).
-
-RULES:
-1. Return ONLY a valid JSON array. No prose, no markdown, no code fences.
-2. Each item: {"date":"YYYY-MM-DD","merch":"clean merchant name","amt":number,"cat":"category","raw":"original line"}
-3. amt must be a plain JSON number without commas. Negative for charges/debits/purchases. Positive for deposits/credits/payments/refunds.
-4. date must be YYYY-MM-DD. Infer year from statement period if only MM/DD shown.
-5. merch: clean short name. Strip city/state, reference numbers, transaction IDs.
-6. cat: one of Groceries, Restaurants, Transport, Healthcare, Shopping, Utilities, Subscriptions, Entertainment, Property, Housing, Personal Care, Income, Transfer, Other
-7. DO NOT include: opening/closing balances, statement totals, payment due amounts, column headers, page numbers, legal notices, available credit lines.
-8. DO include: purchases, fees, interest charges, interest earned, refunds, deposits, transfers.
-9. If a line is ambiguous, include it with cat "Other".
-10. Also look for account last 4 digits anywhere in the document. If found, include as "last4":"XXXX" in the FIRST item only.
-11. If no transactions found, return [].
-Page markers like "--- PAGE N ---" are navigation aids, not transactions.`
-
-const PDF_SCHEMA = {
-  type:"ARRAY",
-  items:{
-    type:"OBJECT",
-    properties:{
-      date:{type:"STRING"},
-      amt:{type:"NUMBER"},
-      merch:{type:"STRING"},
-      cat:{type:"STRING",nullable:true},
-      raw:{type:"STRING"},
-      last4:{type:"STRING",nullable:true}
-    },
-    required:["date","amt","merch","raw"]
-  }
-}
-
-const importPDF = async (file) => {
-  const { text, sparse } = await extractPdfText(file)
-  if(sparse) throw new Error("This PDF appears to be scanned (image-only). Your bank's website usually has a downloadable digital version — look for 'eStatement' or 'Transaction History'.")
-  const geminiBody = {
-    contents:[{parts:[{text: PDF_PROMPT + "\n\nSTATEMENT TEXT:\n" + text}]}],
-    generationConfig:{ temperature:0.1, maxOutputTokens:8192, responseMimeType:"application/json", responseSchema:PDF_SCHEMA }
-  }
-  const netlifyPayload = { type:"pdf", data: btoa(unescape(encodeURIComponent(text))), mime:"text/plain" }
-  const rawText = await callGemini(geminiBody, netlifyPayload)
-  let rows
-  try { rows = extractJSON(rawText) } catch { throw new Error("Could not parse Gemini response. Try re-uploading the PDF.") }
-  if(!Array.isArray(rows)) rows = rows?.transactions || rows?.result || []
-  // Extract last4 from first item if present
-  const last4 = rows[0]?.last4 || null
-  const cleaned = rows.filter(r=>r.merch&&r.amt!==undefined).map(r=>({
-    date: normalizeDate(r.date||""),
-    merch: (r.merch||"").trim(),
-    amt: typeof r.amt==="string" ? parseFloat(r.amt.replace(/[^0-9.-]/g,""))||0 : (r.amt||0),
-    cat: r.cat||autocat(r.merch||""),
-    member:"", note:"", csvAcct:""
-  }))
-  return { rows:cleaned, last4 }
-}
-
-// ─── Receipt scan — browser-direct ───────────────────────────────────────────
-const RECEIPT_PROMPT = `Extract receipt data and return ONLY valid JSON — no markdown, no explanation.
-Return exactly: {"merchant":"string","date":"YYYY-MM-DD","amount":number,"category":"string"}
-category must be one of: Groceries, Restaurants, Transport, Healthcare, Shopping, Utilities, Subscriptions, Entertainment, Property, Housing, Personal Care, Income, Transfer, Other
-If you cannot read a field, use empty string or 0. amount must be a positive number.`
-
-const scanWithGemini = async (b64, mime) => {
-  const geminiBody = {
-    contents:[{parts:[{inline_data:{mime_type:mime||"image/jpeg",data:b64}},{text:RECEIPT_PROMPT}]}],
-    generationConfig:{ temperature:0.1, maxOutputTokens:256, responseMimeType:"application/json" }
-  }
-  const netlifyPayload = { type:"receipt", data:b64, mime }
-  const text = await callGemini(geminiBody, netlifyPayload)
-  try { return extractJSON(text) } catch { throw new Error("Could not parse receipt scan response") }
-}
+// ─── Category Selector ────────────────────────────────────────────────────────
 function CatSelect({value,onChange,customCats,onAddCat,style={}}){
   const[adding,setAdding]=useState(false),[newCat,setNewCat]=useState("")
   const CATS=getAllCats(customCats)
@@ -333,114 +136,96 @@ function CatSelect({value,onChange,customCats,onAddCat,style={}}){
   )
 }
 
-// ─── Category Selector ────────────────────────────────────────────────────────
+// ─── Gemini helpers ───────────────────────────────────────────────────────────
+const scanWithGemini = async(b64,mime)=>{
+  const res=await fetch("/.netlify/functions/gemini",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"receipt",data:b64,mime})})
+  const{text,error}=await res.json()
+  if(error)throw new Error(error)
+  try{return JSON.parse(text.replace(/```json|```/g,"").trim())}catch{throw new Error("Could not parse AI response")}
+}
+const parsePDFWithGemini = async b64=>{
+  const res=await fetch("/.netlify/functions/gemini",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"pdf",data:b64,mime:"application/pdf"})})
+  const{text,error}=await res.json()
+  if(error)throw new Error(error)
+  // Try to find account last-4 in response text for auto-matching
+  const acctMatch=text.match(/(?:ending|x{2,}|account)[^\d]*(\d{4})(?!\d)/i)
+  const last4=acctMatch?.[1]||null
+  const clean=text.replace(/```json|```/g,"")
+  const arrMatch=clean.match(/\[[\s\S]*\]/)
+  if(!arrMatch)throw new Error("No transactions found — try CSV instead")
+  const rows=JSON.parse(arrMatch[0])
+  return{rows,last4}
+}
+
+// ─── Import Modal ─────────────────────────────────────────────────────────────
 function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onClose,CATS,customCats,handleAddCat}){
   const[selAcct,setSelAcct]=useState(detectedAcctId||"")
   const[preview,setPreview]=useState(rows)
   const[bulkCat,setBulkCat]=useState("")
-  const[flipSigns,setFlipSigns]=useState(false)
   const[importing,setImporting]=useState(false)
   const grouped={}; accts.forEach(a=>{const g=a.inst||"Other";if(!grouped[g])grouped[g]=[];grouped[g].push(a)})
-  const csvAccts=[...new Set(rows.map(r=>r.csvAcct).filter(Boolean))]
-  const isMultiAcct=csvAccts.length>1
-  const displayRows=preview.map(r=>({...r,amt:flipSigns?-r.amt:r.amt}))
-  // Improved duplicate detection: ±2 days, ±$0.01, merchant similarity ≥ 0.8
-  const strSim=(a,b)=>{
-    const s1=(a||"").toLowerCase().replace(/\W/g,""),s2=(b||"").toLowerCase().replace(/\W/g,"")
-    if(!s1||!s2)return 0;if(s1===s2)return 1
-    const bgs=s=>{const r=new Set();for(let i=0;i<s.length-1;i++)r.add(s.slice(i,i+2));return r}
-    const b1=bgs(s1),b2=bgs(s2);let inter=0;b1.forEach(b=>b2.has(b)&&inter++);return(2*inter)/(b1.size+b2.size)
-  }
-  const withDup=displayRows.map(r=>({...r,isDup:existingTxns.some(e=>{
-    const dayDiff=r.date&&e.date?Math.abs(new Date(r.date)-new Date(e.date))/86400000:99
-    const amtMatch=Math.abs((e.amt||0)-(r.amt||0))<0.02
-    const merchMatch=strSim(e.merch||"",r.merch||"")>=0.8
-    return dayDiff<=2&&amtMatch&&merchMatch
-  })}))
+  const withDup=preview.map(r=>({...r,isDup:existingTxns.some(e=>e.date===r.date&&Math.abs((e.amt||0)-(r.amt||0))<0.02&&(e.merch||"").toLowerCase().trim()===(r.merch||"").toLowerCase().trim())}))
   const dupCount=withDup.filter(r=>r.isDup).length
-  const posCount=withDup.filter(r=>r.amt>0).length
-  const negCount=withDup.filter(r=>r.amt<0).length
   const doImport=async(skipDups)=>{
     setImporting(true)
     const toSave=skipDups?withDup.filter(r=>!r.isDup):withDup
-    await onImport(toSave.map(r=>{
-      const{isDup,csvAcct,...rest}=r
-      let aid=selAcct?parseInt(selAcct):null
-      if(!aid&&csvAcct){const m4=csvAcct.match(/(\d{4})/);if(m4){const m=accts.find(a=>a.name?.includes(m4[1]));if(m)aid=m.id}}
-      return{...rest,aid,note:rest.note||(csvAcct&&!aid?csvAcct:"")}
-    }))
+    await onImport(toSave.map(r=>({...r,aid:selAcct?parseInt(selAcct):null,isDup:undefined})))
     setImporting(false); onClose()
   }
   return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,padding:"16px"}}>
-      <div style={{background:card,border:`1px solid ${bdr}`,borderRadius:"14px",padding:"22px",width:"100%",maxWidth:"740px",maxHeight:"92vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:"16px",boxShadow:"0 12px 60px rgba(0,0,0,.9)"}}>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,padding:"16px"}} onClick={onClose}>
+      <div style={{...S.card,width:"100%",maxWidth:"700px",maxHeight:"92vh",overflowY:"auto",display:"flex",flexDirection:"column",gap:"14px"}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h3 style={{fontSize:"16px",fontWeight:"700",color:t1,margin:0}}>📥 Import Preview — {rows.length} transactions</h3>
-          <button onClick={onClose} style={{background:"#374151",border:"none",color:t1,cursor:"pointer",fontSize:"18px",lineHeight:1,padding:"6px 10px",borderRadius:"8px"}}>✕</button>
+          <h3 style={{...S.h2,margin:0}}>📥 Import Preview — {rows.length} transactions</h3>
+          <button onClick={onClose} style={{background:"none",border:"none",color:t2,cursor:"pointer",fontSize:"20px"}}>✕</button>
         </div>
-        {/* Sign sanity check */}
-        <div style={{background:"#0d1117",border:`1px solid ${bdr}`,borderRadius:"8px",padding:"12px 14px"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"10px"}}>
-            <div style={{fontSize:"13px",color:t2}}>
-              Detected: <span style={{color:"#10b981",fontWeight:"600"}}>↑ {posCount} income</span> · <span style={{color:"#f87171",fontWeight:"600"}}>↓ {negCount} expenses</span>
-              {negCount===0&&posCount>0&&<span style={{color:"#f59e0b",marginLeft:"8px"}}>— all positive, flip signs if these are expenses</span>}
-            </div>
-            <label style={{display:"flex",alignItems:"center",gap:"8px",cursor:"pointer",color:t2,fontSize:"13px",userSelect:"none"}}>
-              <input type="checkbox" checked={flipSigns} onChange={e=>setFlipSigns(e.target.checked)} style={{accentColor:acc,width:"16px",height:"16px"}}/>
-              Flip all signs
-            </label>
-          </div>
-        </div>
-        {/* Multi-account notice */}
-        {isMultiAcct&&<div style={{background:"#1e3a5f55",border:"1px solid #3b82f655",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#93c5fd"}}>📂 Multi-account export — {csvAccts.length} accounts detected. Account names will be saved in the note field. Add accounts in Accounts tab to enable auto-matching by last 4 digits.</div>}
         {/* Account picker */}
         <div>
-          <label style={{...S.lbl,marginBottom:"6px"}}>{isMultiAcct?"Override account for all (optional)":"Which account is this from?"}{last4&&<span style={{color:"#f59e0b",marginLeft:"8px"}}>Account ending {last4} detected</span>}</label>
-          <select style={{...S.sel,width:"100%",fontSize:"14px",padding:"10px 12px"}} value={selAcct} onChange={e=>setSelAcct(e.target.value)}>
-            <option value="">{isMultiAcct?"— Auto-match by last 4 digits —":"— Unassigned —"}</option>
+          <label style={S.lbl}>Which account is this from?{last4&&<span style={{color:"#f59e0b",marginLeft:"6px"}}>Account ending in {last4} detected</span>}</label>
+          <select style={{...S.sel,width:"100%"}} value={selAcct} onChange={e=>setSelAcct(e.target.value)}>
+            <option value="">— Unassigned —</option>
             {Object.entries(grouped).map(([inst,list])=>(
               <optgroup key={inst} label={inst}>
                 {list.map(a=><option key={a.id} value={a.id}>{AT[a.type]?.i} {a.name}</option>)}
               </optgroup>
             ))}
           </select>
+          {last4&&!selAcct&&<p style={{fontSize:"12px",color:"#f59e0b",margin:"4px 0 0"}}>⚠️ Could not auto-match account ending in {last4} — please select above</p>}
         </div>
         {/* Bulk category */}
-        <div style={{display:"flex",gap:"10px",alignItems:"center"}}>
-          <span style={{fontSize:"13px",color:t2,flexShrink:0}}>Apply category to all:</span>
-          <CatSelect value={bulkCat||"Other"} onChange={v=>{setBulkCat(v);setPreview(p=>p.map(r=>({...r,cat:v})))}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"13px"}}/>
+        <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+          <span style={{fontSize:"12px",color:t2,flexShrink:0}}>Apply category to all:</span>
+          <CatSelect value={bulkCat||"Other"} onChange={v=>{setBulkCat(v);setPreview(p=>p.map(r=>({...r,cat:v})))}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"12px",padding:"5px 8px"}}/>
         </div>
-        {/* Dupe warning */}
-        {dupCount>0&&<div style={{background:"#78350f44",border:"1px solid #f59e0b66",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#fbbf24"}}>⚠️ {dupCount} likely duplicate{dupCount!==1?"s":""} — same date, amount &amp; merchant already exist. Use "Skip duplicates" below.</div>}
+        {/* Duplicate warning */}
+        {dupCount>0&&<div style={{background:"#78350f33",border:"1px solid #f59e0b55",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#fbbf24"}}>⚠️ {dupCount} likely duplicate{dupCount!==1?"s":""} detected — same date, amount, and merchant already in your transactions</div>}
         {/* Preview table */}
-        <div style={{borderRadius:"8px",border:`1px solid ${bdr}`,overflow:"hidden"}}>
-          <div style={{overflowX:"auto"}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:"12px"}}>
-              <thead><tr style={{background:"#0d1117"}}>{["Date","Merchant",...(isMultiAcct?["CSV Account"]:[]),"Amount","Category"].map(h=><th key={h} style={{padding:"9px 10px",textAlign:"left",color:t2,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-              <tbody>
-                {withDup.slice(0,25).map((r,i)=>(
-                  <tr key={i} style={{background:r.isDup?"#78350f18":"transparent"}}>
-                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t2,whiteSpace:"nowrap"}}>{r.date}</td>
-                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.isDup?"#6b7280":t1,maxWidth:"190px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.isDup?"⚠️ ":""}{r.merch}</td>
-                    {isMultiAcct&&<td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:"#60a5fa",fontSize:"11px",maxWidth:"130px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.csvAcct}</td>}
-                    <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.amt>=0?"#10b981":"#f87171",fontWeight:"700",whiteSpace:"nowrap"}}>{r.amt>=0?"+":""}{fmt(Math.abs(r.amt||0))}</td>
-                    <td style={{padding:"5px 10px",borderTop:`1px solid ${bdr}22`}}>
-                      <select style={{...S.sel,padding:"3px 6px",fontSize:"11px"}} value={r.cat} onChange={e=>{const v=e.target.value;setPreview(p=>p.map((x,j)=>j===i?{...x,cat:v}:x))}}>
-                        {Object.keys(getAllCats(customCats)).map(c=><option key={c}>{c}</option>)}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {withDup.length>25&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"10px",background:"#0d1117"}}>+ {withDup.length-25} more rows not shown in preview</div>}
+        <div style={{overflowX:"auto",borderRadius:"8px",border:`1px solid ${bdr}`}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:"12px"}}>
+            <thead><tr style={{background:"#0d1117"}}>{["Date","Merchant","Amount","Category","Dup"].map(h=><th key={h} style={{padding:"9px 10px",textAlign:"left",color:t2,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em"}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {withDup.slice(0,20).map((r,i)=>(
+                <tr key={i} style={{opacity:r.isDup?.6:1,background:r.isDup?"#78350f11":"transparent"}}>
+                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t2,whiteSpace:"nowrap"}}>{r.date}</td>
+                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:t1,maxWidth:"200px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.merch}</td>
+                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:r.amt>=0?"#10b981":"#f87171",fontWeight:"600",whiteSpace:"nowrap"}}>{r.amt>=0?"+":""}{fmt(Math.abs(r.amt||0))}</td>
+                  <td style={{padding:"5px 10px",borderTop:`1px solid ${bdr}22`}}>
+                    <select style={{...S.sel,padding:"3px 6px",fontSize:"11px"}} value={r.cat} onChange={e=>{const v=e.target.value;setPreview(p=>p.map((x,j)=>j===i?{...x,cat:v}:x))}}>
+                      {Object.keys(getAllCats(customCats)).map(c=><option key={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td style={{padding:"7px 10px",borderTop:`1px solid ${bdr}22`,color:"#f59e0b",textAlign:"center"}}>{r.isDup?"⚠️":""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {withDup.length>20&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"10px"}}>+ {withDup.length-20} more not shown</div>}
         </div>
         {/* Actions */}
         <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
-          {dupCount>0&&<button onClick={()=>doImport(true)} disabled={importing} style={{...S.btn("green"),flex:1,minWidth:"190px",fontSize:"14px",padding:"11px 16px"}}>{importing?"Saving…":`✓ Import ${withDup.length-dupCount} (skip ${dupCount} dup${dupCount!==1?"s":""})`}</button>}
-          <button onClick={()=>doImport(false)} disabled={importing} style={{...S.btn(dupCount>0?"gray":"green"),flex:1,minWidth:"160px",fontSize:"14px",padding:"11px 16px"}}>{importing?"Saving…":`Import All ${withDup.length}`}</button>
-          <button onClick={onClose} style={{...S.btn("red"),fontSize:"14px",padding:"11px 16px"}}>Cancel</button>
+          {dupCount>0&&<button onClick={()=>doImport(true)} disabled={importing} style={{...S.btn("green"),flex:1}}>{importing?"Importing…":`Import ${withDup.length-dupCount} (skip ${dupCount} dup${dupCount!==1?"s":""})`}</button>}
+          <button onClick={()=>doImport(false)} disabled={importing} style={{...S.btn(dupCount>0?"gray":"green"),flex:1}}>{importing?"Importing…":`Import All ${withDup.length}`}</button>
+          <button onClick={onClose} style={S.btn("gray")}>Cancel</button>
         </div>
       </div>
     </div>
@@ -498,7 +283,6 @@ function MainApp(){
   const[ckd,setCkd]=useState({}),[rentRoll,setRentRoll]=useState([])
   const[customCats,setCustomCats]=useState(getCustomCats())
   const[members,setMembers]=useState(getMembers())
-  const[importData,setImportData]=useState(null)
   const[notif,setNotif]=useState(null)
   const toast=(msg,type="ok")=>{setNotif({msg,type});setTimeout(()=>setNotif(null),4500)}
   const handleAddCat=u=>{saveCustomCats(u);setCustomCats(u)}
@@ -526,15 +310,7 @@ function MainApp(){
         if(r.data)setRcpts(r.data)
         const ck={};(c.data||[]).forEach(x=>ck[x.item_key]=x.checked);setCkd(ck)
         if(rr.data)setRentRoll(rr.data)
-      }catch(e){
-        // Detect Supabase paused project (connection refused / network error)
-        const isPaused=e.message?.includes("Failed to fetch")||e.message?.includes("fetch")||e.code==="PGRST301"||e.status===503
-        if(isPaused){
-          toast("⚠️ Database is paused — go to supabase.com, open your project, click Restore, then refresh this page.","err")
-        }else{
-          toast("Failed to load: "+e.message,"err")
-        }
-      }
+      }catch(e){toast("Failed to load: "+e.message,"err")}
       setLoading(false)
     }
     load()
@@ -548,37 +324,15 @@ function MainApp(){
   const liabs=Math.abs(accts.filter(a=>a.bal<0).reduce((s,a)=>s+a.bal,0))
   const nw=assets-liabs
 
-  // Merchant similarity for duplicate detection (Dice coefficient)
-  const strSim=(a,b)=>{
-    const s1=a.toLowerCase().replace(/\W/g,""), s2=b.toLowerCase().replace(/\W/g,"")
-    if(!s1||!s2)return 0; if(s1===s2)return 1
-    const bigrams=s=>new Set(Array.from({length:s.length-1},(_,i)=>s.slice(i,i+2)))
-    const bg1=bigrams(s1),bg2=bigrams(s2)
-    let inter=0; bg1.forEach(b=>bg2.has(b)&&inter++)
-    return(2*inter)/(bg1.size+bg2.size)
-  }
-
-  // Two-tier receipt match: tight (±$0.05) confirmed, loose (±$2.00) flagged
+  // Computed match queue (receipts that have a potential transaction match)
   const matchQueue=rcpts.filter(r=>!r.txn_id&&(r.amount||0)>0).map(r=>{
-    const candidates=txns.filter(t=>{
-      if(t.receipt_id||!t.date||!r.date)return false
-      const dayDiff=Math.abs(new Date(t.date)-new Date(r.date))/86400000
-      const amtDiff=Math.abs(Math.abs(t.amt||0)-(r.amount||0))
-      return dayDiff<=5&&amtDiff<=2.00
-    }).map(t=>({...t,matchType:Math.abs(Math.abs(t.amt||0)-(r.amount||0))<=0.05?"exact":"possible"}))
+    const candidates=txns.filter(t=>!t.receipt_id&&Math.abs(Math.abs(t.amt||0)-(r.amount||0))<0.50&&t.date&&r.date&&Math.abs(new Date(t.date)-new Date(r.date))/86400000<=5)
     return candidates.length>0?{receipt:r,candidates}:null
   }).filter(Boolean)
 
   // CRUD
   const addTxn=async row=>{const{data,e}=await sb.from("transactions").insert({...row,created_at:new Date().toISOString()}).select().single();if(!e&&data)setTxns(p=>[data,...p]);else if(e)toast("Save failed: "+e.message,"err");return data}
   const delTxn=async id=>{if(!window.confirm("Delete this transaction?"))return;await sb.from("transactions").delete().eq("id",id);setTxns(p=>p.filter(x=>x.id!==id))}
-  // Batched bulk delete — 500 IDs per call instead of sequential round-trips
-  const bulkDelTxns=async ids=>{
-    const arr=[...ids]; const chunks=[]
-    for(let i=0;i<arr.length;i+=500)chunks.push(arr.slice(i,i+500))
-    for(const chunk of chunks)await sb.from("transactions").delete().in("id",chunk)
-    setTxns(p=>p.filter(x=>!ids.has(x.id)))
-  }
   const updTxn=async(id,row)=>{await sb.from("transactions").update(row).eq("id",id);setTxns(p=>p.map(x=>x.id===id?{...x,...row}:x))}
   const addAcct=async row=>{const{data,e}=await sb.from("accounts").insert(row).select().single();if(!e&&data)setAccts(p=>[...p,data]);else if(e)toast("Save failed","err")}
   const delAcct=async id=>{if(!window.confirm("Delete this account?"))return;await sb.from("accounts").delete().eq("id",id);setAccts(p=>p.filter(x=>x.id!==id))}
@@ -604,17 +358,11 @@ function MainApp(){
     toast("🔗 Receipt linked to transaction")
   }
   const handleSetMembers=m=>{saveMembers(m);setMembers(m)}
-  const handleImport=async rows=>{
-    let count=0
-    for(const row of rows){try{await addTxn(row);count++}catch{}}
-    toast(`✓ Imported ${count} transaction${count!==1?"s":""}`)
-    setImportData(null)
-  }
 
   const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,
-    addTxn,delTxn,bulkDelTxns,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
+    addTxn,delTxn,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
     addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,addRent,updRent,delRent,linkReceiptToTxn,
-    toast,handleAddCat,handleSetMembers,setImportData}
+    toast,handleAddCat,handleSetMembers}
 
   if(loading)return(
     <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
@@ -627,7 +375,6 @@ function MainApp(){
   return(
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',system-ui,sans-serif",background:bg,color:t1,overflow:"hidden"}}>
       {notif&&<div style={{position:"fixed",top:16,right:16,zIndex:1000,background:notif.type==="err"?"#7f1d1d":"#14532d",color:notif.type==="err"?"#fca5a5":"#86efac",border:`1px solid ${notif.type==="err"?"#ef4444":"#22c55e"}`,borderRadius:"10px",padding:"10px 16px",fontSize:"13px",fontWeight:"500",maxWidth:"320px",boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>{notif.msg}</div>}
-      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat}/>}
       {open&&<Sidebar nav={nav} setNav={setNav} nw={nw} accts={accts}/>}
       <div style={{flex:1,overflow:"auto",display:"flex",flexDirection:"column",minWidth:0}}>
         <div style={{background:sdbg,borderBottom:`1px solid ${bdr}`,padding:"10px 16px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
@@ -876,276 +623,142 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
   )
 }
 
-function Transactions({txns,addTxn,delTxn,bulkDelTxns,updTxn,accts,toast,CATS,customCats,handleAddCat,members,setImportData}){
+function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,handleAddCat,members}){
   const[q,setQ]=useState(""),[cf,setCf]=useState("All"),[mf,setMf]=useState("All")
-  const[dateFrom,setDateFrom]=useState(""),[dateTo,setDateTo]=useState("")
-  const[reviewOnly,setReviewOnly]=useState(false)
-  const[sortCol,setSortCol]=useState("date"),[sortDir,setSortDir]=useState("desc")
-  const[selected,setSelected]=useState(new Set())
+  const[n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})
   const[expanded,setExpanded]=useState(null)
   const[localNote,setLocalNote]=useState({})
-  const[bulkCat,setBulkCat]=useState(""),[bulkMember,setBulkMember]=useState("")
+  const[importData,setImportData]=useState(null)
   const[pdfBusy,setPdfBusy]=useState(false)
-  const[showAdd,setShowAdd]=useState(false)
-  const[n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})
   const csvRef=useRef(),pdfRef=useRef()
 
-  const add=async()=>{if(!n.merch||n.amt==="")return;await addTxn({...n,amt:parseFloat(n.amt),aid:n.aid?parseInt(n.aid):null});setN({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""});setShowAdd(false)}
+  const add=async()=>{if(!n.merch||n.amt==="")return;await addTxn({...n,amt:parseFloat(n.amt),aid:n.aid?parseInt(n.aid):null});setN({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})}
 
   const handleCSV=async e=>{
     const file=e.target.files[0];if(!file)return
-    try{const text=await file.text();const rows=parseCSVRows(text);if(rows.length===0){toast("Could not read CSV — check column headers","err");e.target.value="";return};setImportData({rows,detectedAcctId:"",last4:null})}
-    catch(err){toast("CSV error: "+err.message,"err")}
+    try{
+      const text=await file.text()
+      const rows=parseCSVRows(text)
+      if(rows.length===0){toast("Could not read CSV — check format","err");e.target.value="";return}
+      setImportData({rows,detectedAcctId:"",last4:null})
+    }catch(err){toast("CSV error: "+err.message,"err")}
     e.target.value=""
   }
+
   const handlePDF=async e=>{
     const file=e.target.files[0];if(!file)return
     setPdfBusy(true)
     try{
-      const{rows,last4}=await importPDF(file)
-      if(!rows.length)throw new Error("No transactions found in this PDF — try CSV if your bank offers it")
+      const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(",")[1]);r.readAsDataURL(file)})
+      const{rows,last4}=await parsePDFWithGemini(b64)
+      if(!Array.isArray(rows)||rows.length===0)throw new Error("No transactions found — try CSV instead")
+      const parsed=rows.map(r=>({date:normalizeDate(r.date||""),merch:r.merch||r.description||"",amt:parseFloat(r.amt)||0,cat:r.cat||autocat(r.merch||r.description||""),member:"",note:""})).filter(r=>r.merch&&r.merch.length>1)
+      // Try to auto-match account from last4
       let detectedAcctId=""
-      if(last4){const match=accts.find(a=>a.name?.includes(last4));if(match)detectedAcctId=String(match.id)}
-      setImportData({rows,detectedAcctId,last4})
+      if(last4){const match=accts.find(a=>a.name?.includes(last4)||a.last4===last4);if(match)detectedAcctId=String(match.id)}
+      setImportData({rows:parsed,detectedAcctId,last4})
     }catch(err){toast("PDF: "+err.message,"err")}
     setPdfBusy(false);e.target.value=""
   }
 
-  // Sorting
-  const toggleSort=col=>{if(sortCol===col){setSortDir(d=>d==="asc"?"desc":"asc")}else{setSortCol(col);setSortDir(col==="amt"?"asc":"desc")}}
-  const SortArrow=({col})=>sortCol===col?<span style={{marginLeft:"3px",fontSize:"10px",color:acc}}>{sortDir==="asc"?"▲":"▼"}</span>:<span style={{marginLeft:"3px",fontSize:"10px",color:"#4b5563"}}>⇅</span>
+  const handleImport=async rows=>{
+    let count=0
+    for(const row of rows){try{await addTxn(row);count++}catch{}}
+    toast(`✓ Imported ${count} transaction${count!==1?"s":""}`)
+    setImportData(null)
+  }
 
   const acctMap={}; accts.forEach(a=>acctMap[a.id]=a)
-
-  // Filter
   const fil=txns.filter(t=>
     (q===""||t.merch?.toLowerCase().includes(q.toLowerCase())||t.cat?.toLowerCase().includes(q.toLowerCase())||t.note?.toLowerCase().includes(q.toLowerCase()))&&
     (cf==="All"||t.cat===cf)&&
-    (mf==="All"||t.member===mf||(mf==="Unassigned"&&!t.member))&&
-    (!dateFrom||t.date>=dateFrom)&&
-    (!dateTo||t.date<=dateTo)&&
-    (!reviewOnly||(t.cat==="Other"&&!t.note))
-  ).sort((a,b)=>{
-    let v=0
-    if(sortCol==="date")v=(a.date||"").localeCompare(b.date||"")
-    else if(sortCol==="merch")v=(a.merch||"").toLowerCase().localeCompare((b.merch||"").toLowerCase())
-    else if(sortCol==="amt")v=(a.amt||0)-(b.amt||0)
-    else if(sortCol==="cat")v=(a.cat||"").localeCompare(b.cat||"")
-    return sortDir==="asc"?v:-v
-  })
+    (mf==="All"||t.member===mf||(mf==="Unassigned"&&!t.member))
+  ).sort((a,b)=>(b.date||"").localeCompare(a.date||""))
 
-  const PAGE=200
-  const visible=fil.slice(0,PAGE)
-
-  // Running balance — only when all visible transactions belong to same account
-  const acctFilter=fil.length>0&&fil.every(t=>t.aid&&t.aid===fil[0].aid)?fil[0].aid:null
-  const showRunning=!!acctFilter
-  // Sort by date+created_at strictly before computing balance to ensure correctness
-  const sortedForBalance=showRunning?[...visible].sort((a,b)=>{
-    const d=(a.date||"").localeCompare(b.date||"")
-    return d!==0?d:(a.created_at||"").localeCompare(b.created_at||"")
-  }):visible
-  let running=0
-  const balanceMap={}
-  if(showRunning){sortedForBalance.forEach(t=>{running+=t.amt||0;balanceMap[t.id]=running})}
-  const withRunning=visible.map(t=>({...t,running:balanceMap[t.id]??null}))
-
-  // Totals
   const incT=fil.filter(t=>t.amt>0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0)
   const expT=Math.abs(fil.filter(t=>t.amt<0&&t.cat!=="Transfer").reduce((s,t)=>s+t.amt,0))
-  const reviewCount=txns.filter(t=>t.cat==="Other"&&!t.note).length
-
-  // Selection helpers
-  const allSel=visible.length>0&&visible.every(t=>selected.has(t.id))
-  const toggleAll=()=>{if(allSel){setSelected(new Set())}else{setSelected(new Set(visible.map(t=>t.id)))}}
-  const toggleOne=(id,e)=>{e.stopPropagation();setSelected(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s})}
-
-  // Bulk actions
-  const bulkDelete=async()=>{
-    if(!selected.size)return
-    if(!window.confirm(`Delete ${selected.size} transaction${selected.size!==1?"s":""}? This cannot be undone.`))return
-    const ids=new Set(selected)
-    await bulkDelTxns(ids)
-    setSelected(new Set())
-    toast(`✓ Deleted ${ids.size} transaction${ids.size!==1?"s":""}`)
-  }
-
-  const bulkReCat=async()=>{if(!bulkCat||!selected.size)return;for(const id of selected)await updTxn(id,{cat:bulkCat});toast(`✓ Re-categorized ${selected.size} transactions`)}
-  const bulkAssignMember=async()=>{if(!bulkMember||!selected.size)return;for(const id of selected)await updTxn(id,{member:bulkMember});toast(`✓ Assigned ${selected.size} transactions to ${bulkMember}`)}
-
-  // Export filtered view
-  const exportCSV=()=>{
-    const rows=[["Date","Merchant","Amount","Category","Member","Account","Note"],
-      ...fil.map(t=>[t.date,`"${(t.merch||"").replace(/"/g,'""')}"`,t.amt,t.cat,t.member||"",acctMap[t.aid]?.name||"",`"${(t.note||"").replace(/"/g,'""')}"`])]
-    const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));a.download=`transactions_export_${new Date().toISOString().slice(0,10)}.csv`;a.click()
-    toast(`✓ Exported ${fil.length} transactions`)
-  }
-
-  const thStyle={padding:"9px 10px",textAlign:"left",color:t2,borderBottom:`1px solid ${bdr}`,fontWeight:"600",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em",cursor:"pointer",whiteSpace:"nowrap",userSelect:"none",background:"#0d1117"}
 
   return(
     <div style={{padding:"22px"}}>
-      {/* Header */}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px",flexWrap:"wrap",gap:"8px"}}>
-        <div>
-          <h1 style={S.h1}>Transactions</h1>
-          <p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>
-            {fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}
-            {reviewCount>0&&<span onClick={()=>setReviewOnly(r=>!r)} style={{marginLeft:"10px",color:"#f59e0b",cursor:"pointer",fontWeight:"600"}}>⚠️ {reviewCount} need review</span>}
-          </p>
+      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat}/>}
+      <div style={{marginBottom:"14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
+          <div><h1 style={S.h1}>Transactions</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}</p></div>
         </div>
-        <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
-          <button onClick={()=>setShowAdd(v=>!v)} style={{...S.btn(showAdd?"gray":"purple"),padding:"7px 14px"}}>+ Add</button>
+        <div style={{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
+          <input style={{...S.inp,flex:"1",minWidth:"140px"}} placeholder="Search…" value={q} onChange={e=>setQ(e.target.value)}/>
+          <select style={S.sel} value={cf} onChange={e=>setCf(e.target.value)}><option>All</option>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
+          <select style={S.sel} value={mf} onChange={e=>setMf(e.target.value)}><option value="All">All Members</option><option value="Unassigned">Unassigned</option>{members.map(m=><option key={m}>{m}</option>)}</select>
           <input ref={csvRef} type="file" accept=".csv" style={{display:"none"}} onChange={handleCSV}/>
           <input ref={pdfRef} type="file" accept=".pdf" style={{display:"none"}} onChange={handlePDF}/>
-          <button onClick={()=>csvRef.current?.click()} style={{...S.btn("green"),padding:"7px 14px"}}>📂 CSV</button>
-          <button onClick={()=>pdfRef.current?.click()} disabled={pdfBusy} style={{...S.btn("blue"),padding:"7px 14px"}}>{pdfBusy?"⏳":"📄 PDF"}</button>
-          <button onClick={exportCSV} style={{...S.btn("gray"),padding:"7px 14px"}} title="Export filtered view">⬇️ Export</button>
+          <button onClick={()=>csvRef.current?.click()} style={{...S.btn("green"),whiteSpace:"nowrap"}}>📂 CSV</button>
+          <button onClick={()=>pdfRef.current?.click()} disabled={pdfBusy} style={{...S.btn("purple"),whiteSpace:"nowrap"}}>{pdfBusy?"⏳":"📄 PDF"}</button>
         </div>
       </div>
-
-      {/* Filters */}
-      <div style={{...S.card,marginBottom:"12px",padding:"14px 16px"}}>
-        <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
-          <input style={{...S.inp,flex:"1",minWidth:"130px"}} placeholder="🔍 Search merchant, category, note…" value={q} onChange={e=>setQ(e.target.value)}/>
-          <select style={S.sel} value={cf} onChange={e=>setCf(e.target.value)}><option value="All">All Categories</option>{Object.keys(CATS).map(c=><option key={c}>{c}</option>)}</select>
-          <select style={S.sel} value={mf} onChange={e=>setMf(e.target.value)}><option value="All">All Members</option><option value="Unassigned">Unassigned</option>{members.map(m=><option key={m}>{m}</option>)}</select>
-          <input style={{...S.inp,width:"130px"}} type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} title="From date"/>
-          <input style={{...S.inp,width:"130px"}} type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} title="To date"/>
-          <label style={{display:"flex",alignItems:"center",gap:"6px",cursor:"pointer",color:reviewOnly?"#f59e0b":t2,fontSize:"12px",whiteSpace:"nowrap"}}>
-            <input type="checkbox" checked={reviewOnly} onChange={e=>setReviewOnly(e.target.checked)} style={{accentColor:"#f59e0b"}}/>
-            Needs Review
-          </label>
-          {(q||cf!=="All"||mf!=="All"||dateFrom||dateTo||reviewOnly)&&<button onClick={()=>{setQ("");setCf("All");setMf("All");setDateFrom("");setDateTo("");setReviewOnly(false)}} style={{...S.btn("gray"),padding:"6px 10px",fontSize:"12px"}}>✕ Clear</button>}
-        </div>
-      </div>
-
-      {/* Add form */}
-      {showAdd&&<div style={{...S.card,marginBottom:"12px"}}>
-        <div style={{fontSize:"13px",fontWeight:"600",color:t1,marginBottom:"12px"}}>New Transaction</div>
+      <div style={{...S.card,marginBottom:"14px"}}>
+        <div style={{fontSize:"13px",fontWeight:"600",color:t1,marginBottom:"12px"}}>Add Transaction</div>
         <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"flex-end"}}>
           <input style={{...S.inp,width:"120px"}} type="date" value={n.date} onChange={e=>setN(p=>({...p,date:e.target.value}))}/>
           <input style={{...S.inp,flex:"1",minWidth:"130px"}} placeholder="Merchant" value={n.merch} onChange={e=>setN(p=>({...p,merch:e.target.value}))}/>
-          <input style={{...S.inp,width:"130px"}} type="number" placeholder="Amount (neg=expense)" value={n.amt} onChange={e=>setN(p=>({...p,amt:e.target.value}))}/>
+          <input style={{...S.inp,width:"120px"}} type="number" placeholder="Amt (neg=expense)" value={n.amt} onChange={e=>setN(p=>({...p,amt:e.target.value}))}/>
           <CatSelect value={n.cat} onChange={v=>setN(p=>({...p,cat:v}))} customCats={customCats} onAddCat={handleAddCat}/>
-          {accts.length>0&&<select style={S.sel} value={n.aid} onChange={e=>setN(p=>({...p,aid:e.target.value}))}><option value="">Account</option>{accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>}
+          {accts.length>0&&(
+            <select style={S.sel} value={n.aid} onChange={e=>setN(p=>({...p,aid:e.target.value}))}><option value="">Account</option>{accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>
+          )}
           <select style={S.sel} value={n.member} onChange={e=>setN(p=>({...p,member:e.target.value}))}><option value="">Member</option>{members.map(m=><option key={m}>{m}</option>)}</select>
-          <button style={S.btn("green")} onClick={add}>Save</button>
-          <button style={S.btn("gray")} onClick={()=>setShowAdd(false)}>Cancel</button>
+          <button style={S.btn("green")} onClick={add}>Add</button>
         </div>
-      </div>}
-
-      {/* Bulk action bar */}
-      {selected.size>0&&(
-        <div style={{...S.card,marginBottom:"12px",padding:"12px 16px",background:"#1e1b4b",border:"1px solid #6366f155",display:"flex",gap:"10px",alignItems:"center",flexWrap:"wrap"}}>
-          <span style={{color:acc,fontWeight:"700",fontSize:"13px"}}>{selected.size} selected</span>
-          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
-            <CatSelect value={bulkCat||"Other"} onChange={setBulkCat} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"12px",padding:"4px 8px"}}/>
-            <button onClick={bulkReCat} disabled={!bulkCat} style={{...S.btn("purple"),padding:"5px 12px",fontSize:"12px"}}>Re-categorize</button>
-          </div>
-          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
-            <select style={{...S.sel,fontSize:"12px",padding:"5px 8px"}} value={bulkMember} onChange={e=>setBulkMember(e.target.value)}><option value="">— Member —</option>{members.map(m=><option key={m}>{m}</option>)}</select>
-            <button onClick={bulkAssignMember} disabled={!bulkMember} style={{...S.btn("orange"),padding:"5px 12px",fontSize:"12px"}}>Assign</button>
-          </div>
-          <div style={{flex:1}}/>
-          <button onClick={bulkDelete} style={{...S.btn("red"),padding:"5px 14px",fontSize:"12px"}}>🗑 Delete {selected.size}</button>
-          <button onClick={()=>setSelected(new Set())} style={{...S.btn("gray"),padding:"5px 10px",fontSize:"12px"}}>✕ Deselect</button>
-        </div>
-      )}
-
-      {/* Table */}
-      <div style={{...S.card,padding:0,overflow:"hidden"}}>
-        {fil.length===0
-          ?<p style={{color:t2,textAlign:"center",padding:"40px"}}>No transactions match your filters.</p>
-          :<div style={{overflowX:"auto"}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
-              <thead>
-                <tr>
-                  <th style={{...thStyle,width:"36px",cursor:"default"}} onClick={e=>e.stopPropagation()}>
-                    <input type="checkbox" checked={allSel} onChange={toggleAll} style={{accentColor:acc,width:"14px",height:"14px",cursor:"pointer"}}/>
-                  </th>
-                  <th style={thStyle} onClick={()=>toggleSort("date")}>Date<SortArrow col="date"/></th>
-                  <th style={thStyle} onClick={()=>toggleSort("merch")}>Merchant<SortArrow col="merch"/></th>
-                  <th style={thStyle} onClick={()=>toggleSort("cat")}>Category<SortArrow col="cat"/></th>
-                  <th style={{...thStyle,textAlign:"right"}} onClick={()=>toggleSort("amt")}>Amount<SortArrow col="amt"/></th>
-                  {showRunning&&<th style={{...thStyle,textAlign:"right",color:"#60a5fa"}}>Balance</th>}
-                  <th style={{...thStyle,cursor:"default"}}>Details</th>
-                  <th style={{...thStyle,cursor:"default",width:"32px"}}/>
-                </tr>
-              </thead>
-              <tbody>
-                {withRunning.map((t,i)=>{
-                  const acct=acctMap[t.aid]
-                  const isSel=selected.has(t.id)
-                  const isExp=expanded===t.id
-                  const needsReview=t.cat==="Other"&&!t.note
-                  return(
-                    <>
-                      <tr key={t.id} onClick={()=>setExpanded(isExp?null:t.id)} style={{background:isSel?"#1e1b4b":isExp?"#0d1117":"transparent",cursor:"pointer",borderTop:i>0?`1px solid ${bdr}22`:""}}>
-                        <td style={{padding:"10px 10px 10px 14px"}} onClick={e=>toggleOne(t.id,e)}>
-                          <input type="checkbox" checked={isSel} onChange={()=>{}} style={{accentColor:acc,width:"14px",height:"14px",cursor:"pointer",pointerEvents:"none"}}/>
-                        </td>
-                        <td style={{padding:"10px",color:t2,whiteSpace:"nowrap"}}>{t.date}</td>
-                        <td style={{padding:"10px",maxWidth:"220px"}}>
-                          <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                            <div style={{width:"28px",height:"28px",borderRadius:"8px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
-                            <div style={{minWidth:0}}>
-                              <div style={{fontSize:"13px",fontWeight:"500",color:needsReview?"#f59e0b":t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                                {needsReview&&"⚠️ "}{t.merch}
-                              </div>
-                              <div style={{fontSize:"11px",color:t2,display:"flex",gap:"6px"}}>
-                                {acct&&<span style={{color:"#818cf8"}}>{AT[acct.type]?.i} {acct.name}</span>}
-                                {t.member&&<span style={{color:"#f59e0b"}}>· {t.member}</span>}
-                                {t.note&&<span title={t.note}>📝</span>}
-                                {t.receipt_id&&<span style={{color:"#10b981"}}>🔗</span>}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        <td style={{padding:"10px"}} onClick={e=>e.stopPropagation()}>
-                          <CatSelect value={t.cat||"Other"} onChange={v=>updTxn(t.id,{cat:v})} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"11px",padding:"3px 6px"}}/>
-                        </td>
-                        <td style={{padding:"10px",fontWeight:"700",fontSize:"14px",color:t.amt>=0?"#10b981":"#f87171",textAlign:"right",whiteSpace:"nowrap"}}>{t.amt>=0?"+":""}{fmt(Math.abs(t.amt||0))}</td>
-                        {showRunning&&<td style={{padding:"10px",fontWeight:"600",fontSize:"13px",color:t.running>=0?"#10b981":"#f87171",textAlign:"right",whiteSpace:"nowrap"}}>{fmt(t.running||0)}</td>}
-                        <td style={{padding:"10px",fontSize:"11px",color:t2,maxWidth:"140px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isExp?"▲ collapse":"▼ expand"}</td>
-                        <td style={{padding:"10px"}} onClick={e=>e.stopPropagation()}>
-                          <button onClick={()=>delTxn(t.id)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"16px",lineHeight:1,padding:"2px 6px",borderRadius:"6px"}} onMouseOver={e=>e.target.style.color="#ef4444"} onMouseOut={e=>e.target.style.color="#4b5563"}>✕</button>
-                        </td>
-                      </tr>
-                      {isExp&&(
-                        <tr key={t.id+"_exp"} style={{background:"#0a0f1a"}}>
-                          <td colSpan={showRunning?8:7} style={{padding:"12px 16px 14px 54px"}}>
-                            <div style={{display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"flex-end"}}>
-                              <div style={{flex:1,minWidth:"180px"}}>
-                                <label style={S.lbl}>Note</label>
-                                <input style={{...S.inp,fontSize:"12px"}} placeholder="Add a note…" value={localNote[t.id]??t.note??""} onChange={e=>setLocalNote(p=>({...p,[t.id]:e.target.value}))} onBlur={e=>updTxn(t.id,{note:e.target.value})}/>
-                              </div>
-                              <div>
-                                <label style={S.lbl}>Member</label>
-                                <select style={{...S.sel,fontSize:"12px"}} value={t.member||""} onChange={e=>updTxn(t.id,{member:e.target.value})}>
-                                  <option value="">— None —</option>
-                                  {members.map(m=><option key={m}>{m}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label style={S.lbl}>Account</label>
-                                <select style={{...S.sel,fontSize:"12px"}} value={t.aid||""} onChange={e=>updTxn(t.id,{aid:e.target.value?parseInt(e.target.value):null})}>
-                                  <option value="">— None —</option>
-                                  {accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
-                                </select>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </>
-                  )
-                })}
-              </tbody>
-            </table>
-            {fil.length>PAGE&&<div style={{textAlign:"center",color:t2,fontSize:"12px",padding:"14px",borderTop:`1px solid ${bdr}22`}}>Showing {PAGE} of {fil.length} — use filters to narrow results</div>}
-          </div>
+      </div>
+      <div style={S.card}>
+        {fil.length===0?<p style={{color:t2,textAlign:"center",padding:"30px"}}>No transactions yet.</p>:
+          fil.slice(0,150).map((t,i)=>{
+            const acct=acctMap[t.aid]
+            const isExp=expanded===t.id
+            return(
+              <div key={t.id} style={{borderBottom:i<Math.min(fil.length,150)-1?`1px solid ${bdr}22`:""}}>
+                <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 6px",cursor:"pointer"}} onClick={()=>setExpanded(isExp?null:t.id)}>
+                  <div style={{width:"36px",height:"36px",borderRadius:"10px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:"13px",fontWeight:"500",color:t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.merch}</div>
+                    <div style={{fontSize:"11px",color:t2,display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                      <span>{t.date}</span>
+                      {acct&&<span style={{color:acc}}>· {AT[acct.type]?.i} {acct.name}</span>}
+                      {t.member&&<span style={{color:"#f59e0b"}}>· {t.member}</span>}
+                      {t.note&&<span style={{color:"#4b5563"}}>· 📝</span>}
+                      {t.receipt_id&&<span style={{color:"#10b981"}}>· 🔗</span>}
+                    </div>
+                  </div>
+                  <CatSelect value={t.cat||"Other"} onChange={v=>{updTxn(t.id,{cat:v});}} customCats={customCats} onAddCat={handleAddCat} style={{fontSize:"11px",padding:"4px 7px"}}/>
+                  <div style={{fontWeight:"700",fontSize:"14px",color:t.amt>=0?"#10b981":t1,minWidth:"72px",textAlign:"right"}}>{t.amt>=0?"+":""}{fmt(Math.abs(t.amt||0))}</div>
+                  <button onClick={e=>{e.stopPropagation();delTxn(t.id)}} style={{...S.btn("gray"),padding:"4px 8px",fontSize:"12px"}}>✕</button>
+                </div>
+                {isExp&&(
+                  <div style={{background:"#0d1117",padding:"12px 16px",margin:"0 6px 6px",borderRadius:"8px",display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"flex-end"}}>
+                    <div style={{flex:1,minWidth:"160px"}}>
+                      <label style={S.lbl}>Notes</label>
+                      <input style={{...S.inp,fontSize:"12px"}} placeholder="Add a note…" value={localNote[t.id]??t.note??""} onChange={e=>setLocalNote(p=>({...p,[t.id]:e.target.value}))} onBlur={e=>updTxn(t.id,{note:e.target.value})}/>
+                    </div>
+                    <div>
+                      <label style={S.lbl}>Member</label>
+                      <select style={{...S.sel,fontSize:"12px"}} value={t.member||""} onChange={e=>updTxn(t.id,{member:e.target.value})}>
+                        <option value="">— None —</option>
+                        {members.map(m=><option key={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={S.lbl}>Account</label>
+                      <select style={{...S.sel,fontSize:"12px"}} value={t.aid||""} onChange={e=>updTxn(t.id,{aid:e.target.value?parseInt(e.target.value):null})}>
+                        <option value="">— None —</option>
+                        {accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })
         }
+        {fil.length>150&&<p style={{textAlign:"center",color:t2,fontSize:"12px",padding:"12px"}}>Showing 150 of {fil.length} — use search to filter</p>}
       </div>
     </div>
   )
