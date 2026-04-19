@@ -18,6 +18,10 @@ const getAllCats = cc => ({ ...BASE_CATS, ...cc })
 const getMembers = () => { try { return JSON.parse(localStorage.getItem("fos_members")||'["Aaron","Spouse","Joint"]') } catch { return ["Aaron","Spouse","Joint"] } }
 const saveMembers = m => localStorage.setItem("fos_members", JSON.stringify(m))
 
+// Auto-categorization rules storage
+const getAutoCatRules = () => { try { return JSON.parse(localStorage.getItem("fos_autocat_rules")||"[]") } catch { return [] } }
+const saveAutoCatRules = r => localStorage.setItem("fos_autocat_rules", JSON.stringify(r))
+
 const KW = {
   Groceries:["safeway","kroger","qfc","albertsons","whole foods","trader joe","costco","winco","fred meyer","sprouts","aldi","hmart","h mart","gmart","cookunity"],
   Transport:["shell","chevron","arco","bp","exxon","mobil","texaco","speedway","uber","lyft","parking","transit","fuel"],
@@ -32,7 +36,20 @@ const KW = {
   "Personal Care":["great clips","supercuts","ulta","sephora","salon","spa","barber","nail ","molly's skin","skin care"],
   Income:["paycheck","direct deposit","payroll","salary","rent received","refund","redemption","cash auto"],
 }
-const autocat = d => { const s=(d||"").toLowerCase(); for(const[c,ks]of Object.entries(KW)){if(ks.some(k=>s.includes(k)))return c} return "Other" }
+const autocat = (d, userRules = []) => { 
+  const s = (d || "").toLowerCase()
+  // Check user-defined rules first (higher priority)
+  for (const rule of userRules) {
+    if (rule.keyword && s.includes(rule.keyword.toLowerCase())) {
+      return rule.category
+    }
+  }
+  // Fall back to built-in keywords
+  for (const [c, ks] of Object.entries(KW)) {
+    if (ks.some(k => s.includes(k))) return c
+  }
+  return "Other"
+}
 const IRS = {Business:0.67,Medical:0.21,Charity:0.14,Property:0.67,Personal:0}
 const MTYPES = ["Business","Medical","Charity","Property","Personal"]
 const AT = {checking:{i:"🏦",l:"Checking"},savings:{i:"💰",l:"Savings"},credit:{i:"💳",l:"Credit Card"},loan:{i:"🏠",l:"Loan/Mortgage"},investment:{i:"📈",l:"Investment"},property:{i:"🏢",l:"Property"}}
@@ -61,7 +78,7 @@ const S={
   tt:{background:card,border:`1px solid ${bdr}`,borderRadius:"8px",fontSize:"12px",color:t1},
   ntab:a=>({background:a?"#1f2937":"transparent",border:"none",borderLeft:a?`3px solid ${acc}`:"3px solid transparent",cursor:"pointer",color:a?acc:t2,fontSize:"13px",fontWeight:a?"600":"400",padding:"9px 14px",display:"flex",alignItems:"center",gap:"10px",width:"100%",marginBottom:"2px",textAlign:"left",borderRadius:a?"0 8px 8px 0":"0 8px 8px 0"}),
 }
-const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Rent Roll",i:"🏢"},{l:"Tax Prep",i:"💼"}]
+const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Rent Roll",i:"🏢"},{l:"Tax Prep",i:"💼"},{l:"Settings",i:"⚙️"}]
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
 const parseCSVLine = line => {
@@ -82,7 +99,7 @@ const normalizeDate = raw => {
   if(m2)return`20${m2[3]}-${m2[1].padStart(2,"0")}-${m2[2].padStart(2,"0")}`
   return raw.slice(0,10)
 }
-const parseCSVRows = (text) => {
+const parseCSVRows = (text, autoCatRules = []) => {
   try {
     const lines=text.trim().split(/\r?\n/).filter(l=>l.trim())
     if(lines.length<2)return[]
@@ -109,7 +126,7 @@ const parseCSVRows = (text) => {
       } else if(ai>=0){
         amt=parseFloat((vals[ai]||"0").replace(/[^0-9.-]/g,""))||0
       }
-      return{date:normalizeDate(di>=0?vals[di]:""),merch:desc.replace(/^"|"$/g,""),amt,cat:autocat(desc),member:"",note:""}
+      return{date:normalizeDate(di>=0?vals[di]:""),merch:desc.replace(/^"|"$/g,""),amt,cat:autocat(desc, autoCatRules),member:"",note:""}
     }).filter(Boolean)
   } catch { return [] }
 }
@@ -158,7 +175,7 @@ const parsePDFWithGemini = async b64=>{
 }
 
 // ─── Import Modal ─────────────────────────────────────────────────────────────
-function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onClose,CATS,customCats,handleAddCat}){
+function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onClose,CATS,customCats,handleAddCat,autoCatRules}){
   const[selAcct,setSelAcct]=useState(detectedAcctId||"")
   const[preview,setPreview]=useState(rows)
   const[bulkCat,setBulkCat]=useState("")
@@ -166,6 +183,10 @@ function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onCl
   const grouped={}; accts.forEach(a=>{const g=a.inst||"Other";if(!grouped[g])grouped[g]=[];grouped[g].push(a)})
   const withDup=preview.map(r=>({...r,isDup:existingTxns.some(e=>e.date===r.date&&Math.abs((e.amt||0)-(r.amt||0))<0.02&&(e.merch||"").toLowerCase().trim()===(r.merch||"").toLowerCase().trim())}))
   const dupCount=withDup.filter(r=>r.isDup).length
+  
+  // Track auto-categorized transactions
+  const autoCatCount=preview.filter(r=>r.cat&&r.cat!=="Other").length
+  
   const doImport=async(skipDups)=>{
     setImporting(true)
     const toSave=skipDups?withDup.filter(r=>!r.isDup):withDup
@@ -179,6 +200,12 @@ function ImportModal({rows,detectedAcctId,last4,accts,existingTxns,onImport,onCl
           <h3 style={{...S.h2,margin:0}}>📥 Import Preview — {rows.length} transactions</h3>
           <button onClick={onClose} style={{background:"none",border:"none",color:t2,cursor:"pointer",fontSize:"20px"}}>✕</button>
         </div>
+        {/* Auto-cat info */}
+        {autoCatCount>0&&(
+          <div style={{background:"#14532d33",border:"1px solid #22c55e55",borderRadius:"8px",padding:"10px 14px",fontSize:"13px",color:"#86efac"}}>
+            ✨ Auto-categorized {autoCatCount} transaction{autoCatCount!==1?"s":""} using your rules
+          </div>
+        )}
         {/* Account picker */}
         <div>
           <label style={S.lbl}>Which account is this from?{last4&&<span style={{color:"#f59e0b",marginLeft:"6px"}}>Account ending in {last4} detected</span>}</label>
@@ -283,9 +310,11 @@ function MainApp(){
   const[ckd,setCkd]=useState({}),[rentRoll,setRentRoll]=useState([])
   const[customCats,setCustomCats]=useState(getCustomCats())
   const[members,setMembers]=useState(getMembers())
+  const[autoCatRules,setAutoCatRules]=useState(getAutoCatRules())
   const[notif,setNotif]=useState(null)
   const toast=(msg,type="ok")=>{setNotif({msg,type});setTimeout(()=>setNotif(null),4500)}
   const handleAddCat=u=>{saveCustomCats(u);setCustomCats(u)}
+  const handleSetAutoCatRules=r=>{saveAutoCatRules(r);setAutoCatRules(r)}
   const CATS=getAllCats(customCats)
 
   useEffect(()=>{
@@ -359,10 +388,10 @@ function MainApp(){
   }
   const handleSetMembers=m=>{saveMembers(m);setMembers(m)}
 
-  const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,
+  const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,autoCatRules,
     addTxn,delTxn,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
     addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,addRent,updRent,delRent,linkReceiptToTxn,
-    toast,handleAddCat,handleSetMembers}
+    toast,handleAddCat,handleSetMembers,handleSetAutoCatRules}
 
   if(loading)return(
     <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
@@ -396,6 +425,7 @@ function MainApp(){
           {nav==="Receipts"&&<Receipts {...p}/>}
           {nav==="Rent Roll"&&<RentRoll {...p}/>}
           {nav==="Tax Prep"&&<TaxPrep {...p}/>}
+          {nav==="Settings"&&<Settings {...p}/>}
         </div>
       </div>
     </div>
@@ -623,7 +653,7 @@ function Accounts({accts,addAcct,delAcct,updAcct,nw,assets,liabs}){
   )
 }
 
-function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,handleAddCat,members}){
+function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,handleAddCat,members,autoCatRules}){
   const[q,setQ]=useState(""),[cf,setCf]=useState("All"),[mf,setMf]=useState("All")
   const[n,setN]=useState({date:"",merch:"",amt:"",cat:"Other",aid:"",member:"",note:""})
   const[expanded,setExpanded]=useState(null)
@@ -638,7 +668,7 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
     const file=e.target.files[0];if(!file)return
     try{
       const text=await file.text()
-      const rows=parseCSVRows(text)
+      const rows=parseCSVRows(text, autoCatRules)
       if(rows.length===0){toast("Could not read CSV — check format","err");e.target.value="";return}
       setImportData({rows,detectedAcctId:"",last4:null})
     }catch(err){toast("CSV error: "+err.message,"err")}
@@ -652,7 +682,7 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
       const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(",")[1]);r.readAsDataURL(file)})
       const{rows,last4}=await parsePDFWithGemini(b64)
       if(!Array.isArray(rows)||rows.length===0)throw new Error("No transactions found — try CSV instead")
-      const parsed=rows.map(r=>({date:normalizeDate(r.date||""),merch:r.merch||r.description||"",amt:parseFloat(r.amt)||0,cat:r.cat||autocat(r.merch||r.description||""),member:"",note:""})).filter(r=>r.merch&&r.merch.length>1)
+      const parsed=rows.map(r=>({date:normalizeDate(r.date||""),merch:r.merch||r.description||"",amt:parseFloat(r.amt)||0,cat:r.cat||autocat(r.merch||r.description||"", autoCatRules),member:"",note:""})).filter(r=>r.merch&&r.merch.length>1)
       // Try to auto-match account from last4
       let detectedAcctId=""
       if(last4){const match=accts.find(a=>a.name?.includes(last4)||a.last4===last4);if(match)detectedAcctId=String(match.id)}
@@ -680,7 +710,7 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
 
   return(
     <div style={{padding:"22px"}}>
-      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat}/>}
+      {importData&&<ImportModal rows={importData.rows} detectedAcctId={importData.detectedAcctId} last4={importData.last4} accts={accts} existingTxns={txns} onImport={handleImport} onClose={()=>setImportData(null)} CATS={CATS} customCats={customCats} handleAddCat={handleAddCat} autoCatRules={autoCatRules}/>}
       <div style={{marginBottom:"14px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
           <div><h1 style={S.h1}>Transactions</h1><p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>{fil.length} shown · ↑{fmt(incT)} · ↓{fmt(expT)}</p></div>
@@ -711,11 +741,11 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
       </div>
       <div style={S.card}>
         {fil.length===0?<p style={{color:t2,textAlign:"center",padding:"30px"}}>No transactions yet.</p>:
-          fil.slice(0,150).map((t,i)=>{
+          fil.map((t,i)=>{
             const acct=acctMap[t.aid]
             const isExp=expanded===t.id
             return(
-              <div key={t.id} style={{borderBottom:i<Math.min(fil.length,150)-1?`1px solid ${bdr}22`:""}}>
+              <div key={t.id} style={{borderBottom:i<fil.length-1?`1px solid ${bdr}22`:""}}>
                 <div style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 6px",cursor:"pointer"}} onClick={()=>setExpanded(isExp?null:t.id)}>
                   <div style={{width:"36px",height:"36px",borderRadius:"10px",background:(CATS[t.cat]?.c||"#555")+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"16px",flexShrink:0}}>{CATS[t.cat]?.i||"📦"}</div>
                   <div style={{flex:1,minWidth:0}}>
@@ -758,7 +788,6 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
             )
           })
         }
-        {fil.length>150&&<p style={{textAlign:"center",color:t2,fontSize:"12px",padding:"12px"}}>Showing 150 of {fil.length} — use search to filter</p>}
       </div>
     </div>
   )
@@ -1272,6 +1301,202 @@ function TaxPrep({txns,trips,rcpts,ckd,toggleCk,CATS}){
         </div>
       </div>
       <p style={{color:"#4b5563",fontSize:"12px",textAlign:"center",marginTop:"14px"}}>⚠️ Estimates only · consult a tax professional · est. savings @ 22%: <strong style={{color:"#f59e0b"}}>{fmt(total*0.22)}</strong></p>
+    </div>
+  )
+}
+
+function Settings({autoCatRules,handleSetAutoCatRules,CATS,txns,toast}){
+  const[editRule,setEditRule]=useState(null)
+  const[newRule,setNewRule]=useState({keyword:"",category:"Other"})
+  const[testKeyword,setTestKeyword]=useState("")
+  
+  const addRule=()=>{
+    if(!newRule.keyword.trim()){toast("Keyword cannot be empty","err");return}
+    const exists=autoCatRules.some(r=>r.keyword.toLowerCase()===newRule.keyword.toLowerCase())
+    if(exists){toast("Rule with this keyword already exists","err");return}
+    handleSetAutoCatRules([...autoCatRules,{...newRule,id:Date.now()}])
+    setNewRule({keyword:"",category:"Other"})
+    toast("✓ Rule added")
+  }
+  
+  const deleteRule=id=>{
+    if(!window.confirm("Delete this rule?"))return
+    handleSetAutoCatRules(autoCatRules.filter(r=>r.id!==id))
+    toast("✓ Rule deleted")
+  }
+  
+  const updateRule=()=>{
+    if(!editRule.keyword.trim()){toast("Keyword cannot be empty","err");return}
+    handleSetAutoCatRules(autoCatRules.map(r=>r.id===editRule.id?editRule:r))
+    setEditRule(null)
+    toast("✓ Rule updated")
+  }
+  
+  // Test the categorization
+  const testResult=testKeyword?autocat(testKeyword,autoCatRules):null
+  const matchedRule=testKeyword?autoCatRules.find(r=>testKeyword.toLowerCase().includes(r.keyword.toLowerCase())):null
+  
+  // Find transactions that would be affected by rules
+  const affectedCount=txns.filter(t=>{
+    const suggested=autocat(t.merch,autoCatRules)
+    return suggested!==t.cat&&suggested!=="Other"
+  }).length
+  
+  const applyToExisting=async()=>{
+    if(!window.confirm(`This will re-categorize ${affectedCount} transactions based on your rules. Continue?`))return
+    let count=0
+    for(const t of txns){
+      const suggested=autocat(t.merch,autoCatRules)
+      if(suggested!==t.cat&&suggested!=="Other"){
+        await sb.from("transactions").update({cat:suggested}).eq("id",t.id)
+        count++
+      }
+    }
+    toast(`✓ Re-categorized ${count} transactions`)
+    window.location.reload()
+  }
+  
+  return(
+    <div style={{padding:"22px"}}>
+      <div style={{marginBottom:"18px"}}>
+        <h1 style={S.h1}>Settings</h1>
+        <p style={{color:t2,fontSize:"13px",margin:"4px 0 0"}}>Auto-categorization rules & preferences</p>
+      </div>
+      
+      {/* Info card */}
+      <div style={{...S.card,marginBottom:"14px",background:"#1e3a8a22",border:"1px solid #3b82f644"}}>
+        <div style={{display:"flex",gap:"12px",alignItems:"flex-start"}}>
+          <div style={{fontSize:"24px"}}>💡</div>
+          <div>
+            <div style={{fontSize:"13px",fontWeight:"600",color:"#93c5fd",marginBottom:"4px"}}>How Auto-Categorization Works</div>
+            <div style={{fontSize:"12px",color:t2,lineHeight:"1.5"}}>
+              When you import transactions, FinanceOS automatically assigns categories based on keywords in the merchant name. 
+              Your custom rules are checked first, then built-in keywords. Create rules below to improve accuracy.
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      {/* Stats */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"12px",marginBottom:"14px"}}>
+        <div style={S.card}>
+          <div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"6px"}}>Custom Rules</div>
+          <div style={{fontSize:"24px",fontWeight:"700",color:acc}}>{autoCatRules.length}</div>
+        </div>
+        <div style={S.card}>
+          <div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"6px"}}>Built-in Keywords</div>
+          <div style={{fontSize:"24px",fontWeight:"700",color:"#10b981"}}>{Object.values(KW).flat().length}</div>
+        </div>
+        <div style={S.card}>
+          <div style={{fontSize:"10px",color:t2,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"6px"}}>Would Re-categorize</div>
+          <div style={{fontSize:"24px",fontWeight:"700",color:affectedCount>0?"#f59e0b":t2}}>{affectedCount}</div>
+        </div>
+      </div>
+      
+      {/* Add new rule */}
+      <div style={{...S.card,marginBottom:"14px"}}>
+        <div style={{fontSize:"14px",fontWeight:"600",color:t1,marginBottom:"12px"}}>Add New Rule</div>
+        <div style={{display:"flex",gap:"8px",alignItems:"flex-end",flexWrap:"wrap"}}>
+          <div style={{flex:"1",minWidth:"180px"}}>
+            <label style={S.lbl}>Keyword (case-insensitive)</label>
+            <input 
+              style={S.inp} 
+              placeholder="e.g. starbucks, whole foods" 
+              value={newRule.keyword}
+              onChange={e=>setNewRule(p=>({...p,keyword:e.target.value}))}
+            />
+          </div>
+          <div>
+            <label style={S.lbl}>Category</label>
+            <select 
+              style={S.sel} 
+              value={newRule.category}
+              onChange={e=>setNewRule(p=>({...p,category:e.target.value}))}
+            >
+              {Object.keys(CATS).map(c=><option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <button onClick={addRule} style={S.btn("green")}>+ Add Rule</button>
+        </div>
+      </div>
+      
+      {/* Test categorization */}
+      <div style={{...S.card,marginBottom:"14px"}}>
+        <div style={{fontSize:"14px",fontWeight:"600",color:t1,marginBottom:"12px"}}>Test Auto-Categorization</div>
+        <div style={{display:"flex",gap:"8px",alignItems:"flex-end"}}>
+          <div style={{flex:1}}>
+            <label style={S.lbl}>Enter merchant name to test</label>
+            <input 
+              style={S.inp}
+              placeholder="e.g. STARBUCKS #12345"
+              value={testKeyword}
+              onChange={e=>setTestKeyword(e.target.value)}
+            />
+          </div>
+          {testResult&&(
+            <div style={{padding:"8px 16px",background:(CATS[testResult]?.c||"#555")+"22",borderRadius:"8px",border:`1px solid ${CATS[testResult]?.c||"#555"}44`}}>
+              <div style={{fontSize:"11px",color:t2,marginBottom:"2px"}}>Would categorize as:</div>
+              <div style={{fontSize:"13px",fontWeight:"600",color:CATS[testResult]?.c||t1}}>
+                {CATS[testResult]?.i} {testResult}
+              </div>
+              {matchedRule&&<div style={{fontSize:"10px",color:t2,marginTop:"2px"}}>Matched rule: "{matchedRule.keyword}"</div>}
+              {!matchedRule&&testResult!=="Other"&&<div style={{fontSize:"10px",color:t2,marginTop:"2px"}}>Matched built-in keyword</div>}
+            </div>
+          )}
+        </div>
+      </div>
+      
+      {/* Existing rules */}
+      <div style={S.card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"}}>
+          <div style={{fontSize:"14px",fontWeight:"600",color:t1}}>Your Rules ({autoCatRules.length})</div>
+          {affectedCount>0&&(
+            <button onClick={applyToExisting} style={S.btn("orange")}>
+              Apply to {affectedCount} Existing Transaction{affectedCount!==1?"s":""}
+            </button>
+          )}
+        </div>
+        {autoCatRules.length===0?(
+          <p style={{color:t2,fontSize:"13px",textAlign:"center",padding:"20px"}}>No custom rules yet. Add one above to get started.</p>
+        ):(
+          <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+            {autoCatRules.map(rule=>(
+              <div key={rule.id} style={{display:"flex",alignItems:"center",gap:"10px",padding:"10px",background:"#0d1117",borderRadius:"8px"}}>
+                {editRule?.id===rule.id?(
+                  <>
+                    <input 
+                      style={{...S.inp,flex:1,fontSize:"12px"}}
+                      value={editRule.keyword}
+                      onChange={e=>setEditRule(p=>({...p,keyword:e.target.value}))}
+                    />
+                    <select 
+                      style={{...S.sel,fontSize:"12px"}}
+                      value={editRule.category}
+                      onChange={e=>setEditRule(p=>({...p,category:e.target.value}))}
+                    >
+                      {Object.keys(CATS).map(c=><option key={c}>{c}</option>)}
+                    </select>
+                    <button onClick={updateRule} style={{...S.btn("green"),padding:"6px 10px",fontSize:"12px"}}>✓</button>
+                    <button onClick={()=>setEditRule(null)} style={{...S.btn("gray"),padding:"6px 10px",fontSize:"12px"}}>✕</button>
+                  </>
+                ):(
+                  <>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:"13px",color:t1,fontFamily:"monospace"}}>"{rule.keyword}"</div>
+                    </div>
+                    <div style={{fontSize:"12px",color:t2}}>→</div>
+                    <div style={{padding:"4px 12px",background:(CATS[rule.category]?.c||"#555")+"22",borderRadius:"6px",border:`1px solid ${CATS[rule.category]?.c||"#555"}44`,fontSize:"12px",fontWeight:"600",color:CATS[rule.category]?.c||t1}}>
+                      {CATS[rule.category]?.i} {rule.category}
+                    </div>
+                    <button onClick={()=>setEditRule(rule)} style={{...S.btn("blue"),padding:"6px 10px",fontSize:"12px"}}>Edit</button>
+                    <button onClick={()=>deleteRule(rule.id)} style={{...S.btn("red"),padding:"6px 10px",fontSize:"12px"}}>✕</button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
