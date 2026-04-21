@@ -1,6 +1,9 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { createClient } from "@supabase/supabase-js"
 import { BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
+import TaxCenter from "./components/TaxCenter"
+import TaxSettings from "./components/TaxSettings"
+import TaxCategorySelect from "./components/TaxCategorySelect"
 
 const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
 
@@ -78,7 +81,7 @@ const S={
   tt:{background:card,border:`1px solid ${bdr}`,borderRadius:"8px",fontSize:"12px",color:t1},
   ntab:a=>({background:a?"#1f2937":"transparent",border:"none",borderLeft:a?`3px solid ${acc}`:"3px solid transparent",cursor:"pointer",color:a?acc:t2,fontSize:"13px",fontWeight:a?"600":"400",padding:"9px 14px",display:"flex",alignItems:"center",gap:"10px",width:"100%",marginBottom:"2px",textAlign:"left",borderRadius:a?"0 8px 8px 0":"0 8px 8px 0"}),
 }
-const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Rent Roll",i:"🏢"},{l:"Tax Prep",i:"💼"},{l:"Settings",i:"⚙️"}]
+const NAVS=[{l:"Dashboard",i:"📊"},{l:"Accounts",i:"🏦"},{l:"Transactions",i:"↔️"},{l:"Budget",i:"📋"},{l:"Cash Flow",i:"📈"},{l:"Net Worth",i:"💎"},{l:"Goals",i:"🎯"},{l:"Mileage",i:"🚗"},{l:"Receipts",i:"🧾"},{l:"Rent Roll",i:"🏢"},{l:"Tax Center",i:"💼"},{l:"Tax Prep",i:"📑"},{l:"Tax Settings",i:"🧾"},{l:"Settings",i:"⚙️"}]
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
 const parseCSVLine = line => {
@@ -311,6 +314,8 @@ function MainApp(){
   const[customCats,setCustomCats]=useState(getCustomCats())
   const[members,setMembers]=useState(getMembers())
   const[autoCatRules,setAutoCatRules]=useState(getAutoCatRules())
+  const[taxSettings,setTaxSettings]=useState(()=>{try{return JSON.parse(localStorage.getItem("fos_tax_settings")||"{}")}catch{return{}}})
+  useEffect(()=>{localStorage.setItem("fos_tax_settings",JSON.stringify(taxSettings))},[taxSettings])
   const[notif,setNotif]=useState(null)
   const toast=(msg,type="ok")=>{setNotif({msg,type});setTimeout(()=>setNotif(null),4500)}
   const handleAddCat=u=>{saveCustomCats(u);setCustomCats(u)}
@@ -388,10 +393,23 @@ function MainApp(){
   }
   const handleSetMembers=m=>{saveMembers(m);setMembers(m)}
 
-  const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,autoCatRules,
+  // Adapter: maps Aaron's transaction schema (amt, merch, cat, aid) to the
+  // field names the tax module expects (amount, description, category, account).
+  const taxTxns=useMemo(()=>{
+    const acctMap=Object.fromEntries(accts.map(a=>[a.id,a.name]))
+    return txns.map(t=>({
+      ...t,
+      amount:t.amt,
+      description:t.merch,
+      category:t.cat,
+      account:acctMap[t.aid]||"",
+    }))
+  },[txns,accts])
+
+  const p={accts,txns,bud,goals,trips,rcpts,ckd,rentRoll,matchQueue,mT,income,expenses,assets,liabs,nw,CATS,customCats,members,autoCatRules,taxSettings,taxTxns,
     addTxn,delTxn,updTxn,addAcct,delAcct,updAcct,updBudg,addGoal,delGoal,updGoal,
     addTrip,delTrip,addRcpt,delRcpt,updRcpt,toggleCk,addRent,updRent,delRent,linkReceiptToTxn,
-    toast,handleAddCat,handleSetMembers,handleSetAutoCatRules}
+    toast,handleAddCat,handleSetMembers,handleSetAutoCatRules,setTaxSettings}
 
   if(loading)return(
     <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:bg,minHeight:"100vh",color:t1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}}>
@@ -424,7 +442,9 @@ function MainApp(){
           {nav==="Mileage"&&<Mileage {...p}/>}
           {nav==="Receipts"&&<Receipts {...p}/>}
           {nav==="Rent Roll"&&<RentRoll {...p}/>}
+          {nav==="Tax Center"&&<TaxCenter transactions={taxTxns} settings={taxSettings} onUpdateSettings={setTaxSettings}/>}
           {nav==="Tax Prep"&&<TaxPrep {...p}/>}
+          {nav==="Tax Settings"&&<TaxSettings settings={taxSettings} onChange={setTaxSettings}/>}
           {nav==="Settings"&&<Settings {...p}/>}
         </div>
       </div>
@@ -781,6 +801,19 @@ function Transactions({txns,addTxn,delTxn,updTxn,accts,toast,CATS,customCats,han
                         <option value="">— None —</option>
                         {accts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
                       </select>
+                    </div>
+                    <div style={{flexBasis:"100%",borderTop:`1px dashed ${bdr}`,paddingTop:"10px",marginTop:"4px"}}>
+                      <label style={S.lbl}>🧾 Tax Category</label>
+                      <TaxCategorySelect
+                        value={t.tax_category||null}
+                        onChange={catId=>updTxn(t.id,{tax_category:catId,tax_year:t.date?parseInt(t.date.slice(0,4)):new Date().getFullYear()})}
+                        deductiblePct={t.deductible_percentage??100}
+                        onDeductiblePctChange={pct=>updTxn(t.id,{deductible_percentage:pct})}
+                      />
+                      <div style={{marginTop:"8px"}}>
+                        <label style={S.lbl}>Tax Notes (for preparer / receipts)</label>
+                        <input style={{...S.inp,fontSize:"12px"}} placeholder="e.g., Receipt in Drive, Charity EIN 12-3456789" value={t.tax_notes||""} onChange={e=>updTxn(t.id,{tax_notes:e.target.value})}/>
+                      </div>
                     </div>
                   </div>
                 )}
